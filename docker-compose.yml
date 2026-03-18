@@ -1,0 +1,17 @@
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    ports:
+      - "2555:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+      - ./.env:/app/.env
+      - ./data:/root/.litellm
+      - ./auth:/root/.config/litellm
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    restart: always
