@@ -1,8 +1,13 @@
 import json
+import logging
+import os
 import shutil
 import subprocess
+from urllib.parse import urlparse
 import requests
 from providers.base import BaseProvider, AuthStatus
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(BaseProvider):
@@ -12,17 +17,47 @@ class OllamaProvider(BaseProvider):
     env_vars = {}
     models = {}  # Dynamic — discovered at runtime
 
-    OLLAMA_HOST = "http://localhost:11434"
-    DOCKER_HOST = "http://host.docker.internal:11434"
+    DEFAULT_HOST = "http://localhost:11434"
+    DEFAULT_DOCKER_HOST = "http://host.docker.internal:11434"
+
+    @property
+    def OLLAMA_HOST(self):
+        """Host URL used for local API calls (respects OLLAMA_HOST env var)."""
+        return os.environ.get("OLLAMA_HOST", self.DEFAULT_HOST)
+
+    @property
+    def DOCKER_HOST(self):
+        """Host URL used inside Docker containers (respects OLLAMA_HOST env var).
+
+        If OLLAMA_HOST points to localhost/127.0.0.1, replace with
+        host.docker.internal but keep the port.  If it points elsewhere,
+        use it as-is (likely a remote Ollama instance).
+        """
+        env_host = os.environ.get("OLLAMA_HOST")
+        if not env_host:
+            return self.DEFAULT_DOCKER_HOST
+
+        try:
+            parsed = urlparse(env_host)
+            hostname = parsed.hostname or ""
+            if hostname in ("localhost", "127.0.0.1", "::1"):
+                port = parsed.port or 11434
+                scheme = parsed.scheme or "http"
+                return f"{scheme}://host.docker.internal:{port}"
+            # Non-localhost — use as-is (remote Ollama)
+            return env_host
+        except Exception:
+            return self.DEFAULT_DOCKER_HOST
 
     def validate(self):
+        host = self.OLLAMA_HOST
         try:
-            resp = requests.get(f"{self.OLLAMA_HOST}/api/tags", timeout=3)
+            resp = requests.get(f"{host}/api/tags", timeout=3)
             if resp.status_code == 200:
-                return AuthStatus.OK, "Ollama is reachable"
+                return AuthStatus.OK, f"Ollama is reachable at {host}"
             return AuthStatus.UNREACHABLE, f"Ollama returned status {resp.status_code}"
         except requests.ConnectionError:
-            return AuthStatus.UNREACHABLE, "Ollama is not running at localhost:11434"
+            return AuthStatus.UNREACHABLE, f"Ollama is not running at {host}"
         except requests.Timeout:
             return AuthStatus.UNREACHABLE, "Ollama connection timed out"
 
@@ -69,9 +104,14 @@ class OllamaProvider(BaseProvider):
 
     def discover_models(self):
         """Fetch available models from Ollama. Returns dict of alias -> litellm model string."""
+        host = self.OLLAMA_HOST
         try:
-            resp = requests.get(f"{self.OLLAMA_HOST}/api/tags", timeout=5)
+            resp = requests.get(f"{host}/api/tags", timeout=5)
             if resp.status_code != 200:
+                logger.warning(
+                    "Ollama at %s returned HTTP %d — cannot discover models",
+                    host, resp.status_code,
+                )
                 return {}
             data = resp.json()
             models = {}
@@ -81,7 +121,15 @@ class OllamaProvider(BaseProvider):
                     alias = name.replace(":latest", "")
                     models[alias] = f"ollama/{name}"
             return models
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.ConnectionError:
+            logger.warning(
+                "Could not connect to Ollama at %s — is it running?", host
+            )
+            return {}
+        except requests.Timeout:
+            logger.warning(
+                "Connection to Ollama at %s timed out", host
+            )
             return {}
 
     def pull_model(self, model_name):

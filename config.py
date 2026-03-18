@@ -23,10 +23,11 @@ def _load_yaml():
         with open(CONFIG_PATH, "r") as f:
             data = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
-        print(f"Error: litellm_config.yaml is malformed: {e}")
+        log.warning("litellm_config.yaml is malformed: %s", e)
+        print(f"Warning: litellm_config.yaml is malformed: {e}")
         if os.path.exists(CONFIG_BACKUP):
             print(f"  A backup exists at litellm_config.yaml.bak")
-        raise SystemExit(1)
+        return {"model_list": [], "general_settings": {}}
     if "model_list" not in data:
         data["model_list"] = []
     return data
@@ -69,7 +70,7 @@ def list_models():
 
 
 def _provider_from_model(model_str):
-    """Map litellm model prefix to provider name. Returns None for unknown."""
+    """Map litellm model prefix to provider name. Returns the raw prefix for unknown providers."""
     prefix = model_str.split("/")[0] if "/" in model_str else ""
     mapping = {
         "chatgpt": "openai",
@@ -77,11 +78,15 @@ def _provider_from_model(model_str):
         "dashscope": "alibaba",
         "ollama": "ollama",
     }
-    return mapping.get(prefix)
+    return mapping.get(prefix, prefix or "unknown")
 
 
 def add_model(alias, litellm_model, extra_params=None):
     """Add a model to config. Returns (success, message)."""
+    if not alias or not alias.strip():
+        return False, "Model alias cannot be empty."
+    if not litellm_model or not litellm_model.strip():
+        return False, "Model string cannot be empty."
     data = _load_yaml()
     for entry in data["model_list"]:
         if entry.get("model_name") == alias:
@@ -98,21 +103,16 @@ def add_model(alias, litellm_model, extra_params=None):
 
 
 def remove_model(alias):
-    """Remove a model by alias. Returns (success, message, provider_name)."""
+    """Remove a model by alias. Returns (success, message)."""
     data = _load_yaml()
     original_len = len(data["model_list"])
-    removed_provider = None
-    for entry in data["model_list"]:
-        if entry.get("model_name") == alias:
-            model_str = entry.get("litellm_params", {}).get("model", "")
-            removed_provider = _provider_from_model(model_str)
     data["model_list"] = [
         e for e in data["model_list"] if e.get("model_name") != alias
     ]
     if len(data["model_list"]) == original_len:
-        return False, f"Model '{alias}' not found.", None
+        return False, f"Model '{alias}' not found."
     _save_yaml(data)
-    return True, f"Removed '{alias}'", removed_provider
+    return True, f"Removed '{alias}'"
 
 
 def provider_has_models(provider_name):

@@ -3,3 +3,4 @@ __pycache__/
 *.bak
 .env
 .proxy.pid
+.proxy.log

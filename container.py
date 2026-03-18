@@ -1,5 +1,6 @@
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -26,12 +27,13 @@ def _compose_cmd():
     global _cached_compose_cmd
     if _cached_compose_cmd is not None:
         return _cached_compose_cmd
+    docker = _docker_bin()
     try:
         result = subprocess.run(
-            ["docker", "compose", "version"], capture_output=True, text=True
+            [docker, "compose", "version"], capture_output=True, text=True
         )
         if result.returncode == 0:
-            _cached_compose_cmd = ["docker", "compose"]
+            _cached_compose_cmd = [docker, "compose"]
             return _cached_compose_cmd
     except FileNotFoundError:
         pass
@@ -45,8 +47,9 @@ def _compose_cmd():
             return _cached_compose_cmd
     except FileNotFoundError:
         pass
-    # Neither found — return docker-compose and let _run handle the error
-    return ["docker-compose"]
+    # Neither found — cache and return docker-compose, let _run handle the error
+    _cached_compose_cmd = ["docker-compose"]
+    return _cached_compose_cmd
 
 
 def _run(args, capture=False, stream=False):
@@ -73,7 +76,7 @@ def _docker_running():
     """Check if Docker daemon is running."""
     try:
         result = subprocess.run(
-            ["docker", "info"], capture_output=True, text=True
+            [_docker_bin(), "info"], capture_output=True, text=True
         )
         return result.returncode == 0
     except FileNotFoundError:
@@ -92,21 +95,50 @@ PROXY_SCRIPT = os.path.join(DIR, "proxy.py")
 PROXY_PORT = 2555
 
 
+def _is_proxy_process(pid):
+    """Check if the given PID is actually our proxy.py process."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True
+        )
+        return result.returncode == 0 and PROXY_SCRIPT in result.stdout
+    except (OSError, FileNotFoundError):
+        return False
+
+
 def _start_proxy():
-    """Start the system message rewriter proxy in the background."""
+    """Start the system message rewriter proxy in the background.
+
+    Returns True if the proxy started successfully, False otherwise.
+    """
     _stop_proxy()  # Clean up any stale process
     if not os.path.exists(PROXY_SCRIPT):
         log.debug("proxy.py not found, skipping proxy start")
-        return
+        return False
     venv_python = os.path.join(DIR, ".venv", "bin", "python")
     python = venv_python if os.path.exists(venv_python) else "python3"
+    proxy_log = os.path.join(DIR, ".proxy.log")
+    log_fh = open(proxy_log, "a")
     proc = subprocess.Popen(
         [python, PROXY_SCRIPT, str(PROXY_PORT)],
-        cwd=DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=DIR, stdout=log_fh, stderr=log_fh,
     )
     with open(PROXY_PID_FILE, "w") as f:
         f.write(str(proc.pid))
     log.debug("Started proxy (pid=%d) on port %d", proc.pid, PROXY_PORT)
+
+    # Brief wait to detect immediate startup failures
+    time.sleep(0.5)
+    exit_code = proc.poll()
+    if exit_code is not None:
+        log.warning("Proxy exited immediately with code %d", exit_code)
+        try:
+            os.unlink(PROXY_PID_FILE)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def _stop_proxy():
@@ -116,8 +148,29 @@ def _stop_proxy():
     try:
         with open(PROXY_PID_FILE) as f:
             pid = int(f.read().strip())
-        os.kill(pid, 15)  # SIGTERM
-        log.debug("Stopped proxy (pid=%d)", pid)
+        # Verify PID is actually a proxy process before killing (guards against PID recycling)
+        if not _is_proxy_process(pid):
+            log.debug("PID %d is not a proxy process, skipping kill", pid)
+            return
+        os.kill(pid, signal.SIGTERM)
+        log.debug("Sent SIGTERM to proxy (pid=%d)", pid)
+
+        # Wait for process to die (up to 3 seconds)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, OSError):
+                break  # Process is gone
+            time.sleep(0.1)
+        else:
+            # Process still alive after timeout — send SIGKILL
+            try:
+                os.kill(pid, signal.SIGKILL)
+                log.debug("Sent SIGKILL to proxy (pid=%d)", pid)
+            except (ProcessLookupError, OSError):
+                pass
+
     except (ProcessLookupError, ValueError, OSError):
         pass
     finally:
@@ -135,7 +188,8 @@ def _proxy_running():
         with open(PROXY_PID_FILE) as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)  # Check if alive
-        return True
+        # Verify it's actually a proxy.py process (guards against PID recycling)
+        return _is_proxy_process(pid)
     except (ProcessLookupError, ValueError, OSError):
         return False
 
@@ -144,8 +198,12 @@ def up():
     _check_docker()
     ok, _ = _run(["up", "-d"])
     if ok:
-        _start_proxy()
-        print(f"Service started on http://localhost:{PROXY_PORT}")
+        proxy_ok = _start_proxy()
+        if proxy_ok:
+            print(f"Service started on http://localhost:{PROXY_PORT}")
+        else:
+            print(f"Warning: Reverse proxy failed to start. "
+                  f"Container is running but proxy on port {PROXY_PORT} is not available.")
     return ok
 
 
@@ -162,7 +220,9 @@ def restart():
     log.debug("Recreating container with --force-recreate to pick up env/config changes")
     ok, _ = _run(["up", "-d", "--force-recreate"])
     if ok:
-        _start_proxy()
+        proxy_ok = _start_proxy()
+        if not proxy_ok:
+            print(f"Warning: Reverse proxy failed to start on port {PROXY_PORT}.")
     return ok
 
 
@@ -207,13 +267,17 @@ def get_logs_tail(lines=200):
 
 def wait_healthy(timeout=30):
     """Poll until container is up or timeout. Returns True if healthy."""
-    for _ in range(timeout):
+    for i in range(timeout):
+        # Check Docker availability on first iteration to fail fast
+        if i == 0 and not _docker_running():
+            log.debug("Docker not running, aborting wait_healthy")
+            return False
         try:
             ok, output = _run(["ps"], capture=True)
             is_running = "Up" in output or "running" in output.lower()
             if is_running:
                 return True
         except SystemExit:
-            pass  # Docker temporarily unavailable, keep polling
+            return False
         time.sleep(1)
     return False

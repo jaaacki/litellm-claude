@@ -36,22 +36,22 @@ fi
 
 # --- Step 1: Choose provider ---
 
-PROVIDER_JSON=$("$VENV/bin/python" -c "
-import json, sys
-sys.path.insert(0, '$DIR')
+PROVIDER_JSON=$(DIR="$DIR" "$VENV/bin/python" -c '
+import json, os, sys
+sys.path.insert(0, os.environ["DIR"])
 import providers
 
 result = []
 for p in providers.all_providers():
     status, msg = p.validate()
     result.append({
-        'name': p.name,
-        'display': p.display_name,
-        'auth_ok': status.value == 'ok',
-        'auth_msg': msg
+        "name": p.name,
+        "display": p.display_name,
+        "auth_ok": status.value == "ok",
+        "auth_msg": msg
     })
 print(json.dumps(result))
-")
+')
 
 # Parse providers
 PROV_NAMES=()
@@ -66,12 +66,12 @@ while IFS=$'\t' read -r name display auth_ok auth_msg; do
         PROV_DISPLAYS+=("$display  ✗ $auth_msg")
     fi
     PROV_AUTH+=("$auth_ok")
-done < <("$VENV/bin/python" -c "
+done < <("$VENV/bin/python" -c '
 import json, sys
 data = json.loads(sys.stdin.read())
 for p in data:
-    print(f\"{p['name']}\t{p['display']}\t{p['auth_ok']}\t{p['auth_msg']}\")
-" <<< "$PROVIDER_JSON")
+    print(f"{p[\"name\"]}\t{p[\"display\"]}\t{p[\"auth_ok\"]}\t{p[\"auth_msg\"]}")
+' <<< "$PROVIDER_JSON")
 
 echo "  Select a provider:"
 echo ""
@@ -106,17 +106,17 @@ fi
 
 # --- Step 2: Get models for selected provider ---
 
-MODELS_JSON=$("$VENV/bin/python" -c "
-import json, sys
-sys.path.insert(0, '$DIR')
+MODELS_JSON=$(DIR="$DIR" PROVIDER="$PROVIDER" "$VENV/bin/python" -c '
+import json, os, sys
+sys.path.insert(0, os.environ["DIR"])
 import config
 import providers
 
-provider = providers.get_provider('$PROVIDER')
-configured = {m['alias']: m['model'] for m in config.list_models()}
+provider = providers.get_provider(os.environ["PROVIDER"])
+configured = {m["alias"]: m["model"] for m in config.list_models()}
 
 # Get models from provider
-if provider.name == 'ollama':
+if provider.name == "ollama":
     catalog = provider.discover_models()
 else:
     catalog = provider.models
@@ -124,18 +124,18 @@ else:
 result = []
 # Configured models for this provider first
 for alias, model in configured.items():
-    if model.startswith('ollama/') and provider.name == 'ollama':
-        result.append({'alias': alias, 'model': model, 'configured': True})
-    elif not model.startswith('ollama/') and alias in catalog:
-        result.append({'alias': alias, 'model': model, 'configured': True})
+    if model.startswith("ollama/") and provider.name == "ollama":
+        result.append({"alias": alias, "model": model, "configured": True})
+    elif not model.startswith("ollama/") and alias in catalog:
+        result.append({"alias": alias, "model": model, "configured": True})
 
 # Unconfigured from catalog
 for alias, model_str in catalog.items():
     if alias not in configured:
-        result.append({'alias': alias, 'model': model_str, 'configured': False})
+        result.append({"alias": alias, "model": model_str, "configured": False})
 
 print(json.dumps(result))
-")
+')
 
 # Parse models
 ALIASES=()
@@ -152,12 +152,12 @@ while IFS=$'\t' read -r alias model configured; do
     else
         DISPLAY+=("$alias")
     fi
-done < <("$VENV/bin/python" -c "
+done < <("$VENV/bin/python" -c '
 import json, sys
 data = json.loads(sys.stdin.read())
 for m in data:
-    print(f\"{m['alias']}\t{m['model']}\t{m['configured']}\")
-" <<< "$MODELS_JSON")
+    print(f"{m[\"alias\"]}\t{m[\"model\"]}\t{m[\"configured\"]}")
+' <<< "$MODELS_JSON")
 
 if [ "${#ALIASES[@]}" -eq 0 ]; then
     if [ "$PROVIDER" = "ollama" ]; then
@@ -200,19 +200,21 @@ echo ""
 
 if [ "$IS_CONFIGURED" = "False" ]; then
     echo "  Model not in proxy config yet. Adding..."
-    "$VENV/bin/python" << PYEOF
-import sys
-sys.path.insert(0, '$DIR')
+    DIR="$DIR" PROVIDER="$PROVIDER" MODEL="$MODEL" MODEL_STR="$MODEL_STR" \
+    "$VENV/bin/python" <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ["DIR"])
 import config
 import providers
 
-provider = providers.get_provider('$PROVIDER')
-model_str = "$MODEL_STR"
+provider = providers.get_provider(os.environ["PROVIDER"])
+model = os.environ["MODEL"]
+model_str = os.environ["MODEL_STR"]
 extra = {}
-if provider.name == 'ollama':
+if provider.name == "ollama":
     extra = provider.get_extra_params()
-ok, msg = config.add_model("$MODEL", model_str, extra)
-print(f'  \u2713 {msg}' if ok else f'  \u2717 {msg}')
+ok, msg = config.add_model(model, model_str, extra)
+print(f"  \u2713 {msg}" if ok else f"  \u2717 {msg}")
 PYEOF
     echo "  (Run ./litellm.sh restart to activate)"
     echo ""
@@ -234,25 +236,23 @@ fi
 
 echo ""
 
-# --- Read master key from .env ---
-
-MASTER_KEY="sk-1234"
-if [ -f "$DIR/.env" ]; then
-    KEY=$(grep "^LITELLM_MASTER_KEY=" "$DIR/.env" | cut -d= -f2- | tr -d '"' | tr -d "'")
-    if [ -n "$KEY" ]; then
-        MASTER_KEY="$KEY"
-    fi
-fi
-
 # --- Build the function ---
 
 # Use a function instead of alias so we can properly isolate env vars.
+# The master key is read from .env at invocation time rather than embedded
+# in the shell profile, so it stays in the chmod-600 .env file.
+ENV_PATH="$DIR/.env"
+
 FUNC_BLOCK=$(cat <<FUNCEOF
 # Claude Code via LiteLLM Proxy (${MODEL})
+# Note: master key is read from .env at runtime (not embedded in profile)
 ${ALIAS_NAME}() {
+  local _mk
+  _mk=\$(grep "^LITELLM_MASTER_KEY=" "${ENV_PATH}" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+  _mk="\${_mk:-sk-1234}"
   ANTHROPIC_BASE_URL="http://localhost:${PORT}" \\
   ANTHROPIC_MODEL="${MODEL}" \\
-  ANTHROPIC_AUTH_TOKEN="${MASTER_KEY}" \\
+  ANTHROPIC_AUTH_TOKEN="\$_mk" \\
   CLAUDE_CODE_DISABLE_1M_CONTEXT=1 \\
   claude "\$@"
 }
@@ -268,9 +268,19 @@ if grep -q "^${ALIAS_NAME}()" "$PROFILE" 2>/dev/null || grep -q "alias ${ALIAS_N
         echo "  Cancelled."
         exit 0
     fi
-    # Remove old function/alias block
-    sed -i.bak "/# Claude Code via LiteLLM Proxy.*${ALIAS_NAME}/d; /^${ALIAS_NAME}()/,/^}/d; /alias ${ALIAS_NAME}=/d" "$PROFILE"
-    rm -f "${PROFILE}.bak"
+    # Remove old function/alias block using grep -v (portable, no GNU sed needed)
+    # Removes: comment lines, function definition through closing brace, legacy aliases
+    TMPFILE=$(mktemp)
+    awk -v alias="${ALIAS_NAME}" '
+        /^# Claude Code via LiteLLM Proxy/ { skip_comment=1; next }
+        /^# Note: master key is read/ && skip_comment { next }
+        skip_comment && $0 ~ "^"alias"\\(\\)" { skip_comment=0; in_func=1; next }
+        $0 ~ "^"alias"\\(\\)" { in_func=1; next }
+        in_func && /^}/ { in_func=0; next }
+        in_func { next }
+        $0 ~ "^alias "alias"=" { next }
+        { skip_comment=0; print }
+    ' "$PROFILE" > "$TMPFILE" && mv "$TMPFILE" "$PROFILE"
     echo "  Removed old entry."
 fi
 

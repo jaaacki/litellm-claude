@@ -3,7 +3,7 @@ services:
     image: ghcr.io/berriai/litellm:main-v1.82.4-nightly
     container_name: litellm-proxy
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - ./litellm_config.yaml:/app/config.yaml
       - ./.env:/app/.env

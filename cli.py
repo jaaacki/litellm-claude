@@ -4,7 +4,8 @@ import sys
 import os
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-PORT = 2555
+from container import PROXY_PORT as PORT
+from providers.base import AuthStatus
 
 log = logging.getLogger("litellm-cli")
 
@@ -70,13 +71,13 @@ def cmd_status():
             if m["provider"] not in auth_cache:
                 auth_cache[m["provider"]] = provider.validate()
             auth_status, _ = auth_cache[m["provider"]]
-            if auth_status.value == "ok":
+            if auth_status == AuthStatus.OK:
                 icon = "✓"
                 label = "authenticated" if m["provider"] != "ollama" else "reachable"
-            elif auth_status.value == "not_configured":
+            elif auth_status == AuthStatus.NOT_CONFIGURED:
                 icon = "✗"
                 label = "not configured"
-            elif auth_status.value == "unreachable":
+            elif auth_status == AuthStatus.UNREACHABLE:
                 icon = "✗"
                 label = "unreachable"
             else:
@@ -106,7 +107,7 @@ def cmd_login(provider_name=None):
         print("Provider auth status:\n")
         for p in providers.all_providers():
             status, msg = p.validate()
-            if status.value == "ok":
+            if status == AuthStatus.OK:
                 print(f"  {p.display_name:<20} ✓ {msg}")
             else:
                 print(f"  {p.display_name:<20} ✗ {msg}")
@@ -127,7 +128,7 @@ def cmd_login(provider_name=None):
         print(f"  {'✓' if ok else '✗'} {msg}")
         return
 
-    if status.value == "ok":
+    if status == AuthStatus.OK:
         print(f"  ✓ Already authenticated with {provider.display_name}. {msg}")
         return
     elif len(provider.auth_types) == 1:
@@ -202,7 +203,7 @@ def _add_provider_first():
     if provider.name == "ollama":
         # --- Ollama: must be running locally ---
         status, msg = provider.validate()
-        if status.value != "ok":
+        if status != AuthStatus.OK:
             print(f"\n  ✗ {msg}")
             sys.exit(1)
         catalog = provider.discover_models()
@@ -254,7 +255,7 @@ def _add_provider_first():
                     sys.exit(1)
 
             status, msg = provider.validate()
-            if status.value != "ok":
+            if status != AuthStatus.OK:
                 print(f"\n  Need to authenticate with {provider.display_name}.")
                 ok, msg = provider.login(auth_type)
                 if not ok:
@@ -329,7 +330,7 @@ def _add_provider_first():
         sys.exit(1)
     if container.wait_healthy():
         status, msg = provider.validate()
-        if status.value == "ok":
+        if status == AuthStatus.OK:
             print(f"  ✓ Container is running. Added: {', '.join(added)}. {msg}")
         else:
             print(f"  ⚠ Container is running. Added: {', '.join(added)}")
@@ -395,7 +396,7 @@ def _add_model_first():
     if choice.lower() == "o" and ollama_provider:
         # Manual Ollama model input
         status, msg = ollama_provider.validate()
-        if status.value != "ok":
+        if status != AuthStatus.OK:
             print(f"\n  ✗ {msg}")
             sys.exit(1)
 
@@ -434,7 +435,7 @@ def _add_model_first():
         auth_type = None
         if provider.auth_types:
             status, msg = provider.validate()
-            if status.value != "ok":
+            if status != AuthStatus.OK:
                 if len(provider.auth_types) > 1:
                     print(f"\n  Auth method for {provider.display_name}:\n")
                     for i, at in enumerate(provider.auth_types, 1):
@@ -495,7 +496,7 @@ def _add_model_first():
         sys.exit(1)
     if container.wait_healthy():
         status, msg = provider.validate()
-        if status.value == "ok":
+        if status == AuthStatus.OK:
             print(f"  ✓ Container is running with '{final_alias}'. {msg}")
         else:
             print(f"  ⚠ Container is running with '{final_alias}'")
@@ -543,7 +544,8 @@ def cmd_remove():
 
     removed_providers = set()
     for model in selected:
-        ok, msg, provider_name = config.remove_model(model["alias"])
+        provider_name = model["provider"]
+        ok, msg = config.remove_model(model["alias"])
         if ok:
             print(f"  ✓ {msg}")
             if provider_name:
@@ -602,16 +604,21 @@ def cmd_claude(extra_args):
             print("  ✗ Proxy failed to start.")
             sys.exit(1)
 
-    # Check that ANTHROPIC_API_KEY exists in environment
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("  ✗ ANTHROPIC_API_KEY not set in your shell environment.")
-        print("    Export it first: export ANTHROPIC_API_KEY=sk-ant-...")
-        sys.exit(1)
+    # Route through the LiteLLM proxy using the master key for auth
+    import config
 
-    # Launch claude with proxy base URL
-    # The /anthropic endpoint passes through to Anthropic's API directly
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}/anthropic"
+    env["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}"
+    master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+    env["ANTHROPIC_AUTH_TOKEN"] = master_key
+
+    # Set ANTHROPIC_MODEL if there's a configured anthropic/claude model
+    models = config.list_models()
+    for m in models:
+        if "claude" in m["model"].lower() or "anthropic" in m["model"].lower():
+            env.setdefault("ANTHROPIC_MODEL", m["alias"])
+            break
+
     log.debug("Launching Claude Code with ANTHROPIC_BASE_URL=%s", env["ANTHROPIC_BASE_URL"])
 
     print(f"  Launching Claude Code through proxy (localhost:{PORT})...")
@@ -631,11 +638,11 @@ def main():
     _setup_logging(verbose)
     log.debug("CLI started with args: %s", args)
 
-    config._ensure_env()
-
     if not args or args[0] in ("help", "-h", "--help"):
         show_help()
         return
+
+    config._ensure_env()
 
     cmd = args[0]
     log.debug("Executing command: %s", cmd)

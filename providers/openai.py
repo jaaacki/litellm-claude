@@ -8,6 +8,7 @@ import requests
 
 import config
 import container
+from container import PROXY_PORT
 from providers.base import BaseProvider, AuthStatus
 
 log = logging.getLogger("litellm-cli.openai")
@@ -80,34 +81,43 @@ class OpenAIProvider(BaseProvider):
             return AuthStatus.UNREACHABLE, "OpenAI API timed out"
 
     def _validate_browser(self):
-        """Check browser OAuth auth by testing through the proxy."""
+        """Check browser OAuth auth without making billing API calls.
+
+        Uses two lightweight signals:
+        1. Container logs for auth-success patterns (primary)
+        2. Proxy GET /v1/models to see if chatgpt/ models are served (no billing)
+        """
         running, _ = container.status()
         if not running:
             return AuthStatus.NOT_CONFIGURED, "Container not running — cannot check browser auth"
 
-        # Try a real call through the proxy to see if chatgpt/ models work
-        master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
-        try:
-            resp = requests.post(
-                "http://localhost:2555/v1/chat/completions",
-                headers={"Authorization": f"Bearer {master_key}"},
-                json={"model": "gpt-5.4",
-                      "messages": [{"role": "user", "content": "hi"}],
-                      "max_tokens": 1},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                log.debug("Browser OAuth validated via proxy test call")
-                return AuthStatus.OK, "Authenticated via browser OAuth"
-            log.debug("Proxy test call returned %d", resp.status_code)
-        except Exception as e:
-            log.debug("Proxy test call failed: %s", e)
-
-        # Fallback: check logs for auth patterns
+        # Primary check: look for auth-success patterns in container logs (free)
         logs = container.get_logs_tail(200)
         if re.search(r"(?i)(successfully authenticated|chatgpt.*auth|session.*authenticated|access.token)", logs):
             log.debug("Browser OAuth auth pattern found in logs")
             return AuthStatus.OK, "Authenticated via browser OAuth"
+
+        # Secondary check: query the proxy's model list endpoint (no billing)
+        # If chatgpt/ models appear in the served model list, auth is working
+        master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+        chatgpt_configured = [m for m in config.list_models() if m["model"].startswith("chatgpt/")]
+        if chatgpt_configured:
+            try:
+                resp = requests.get(
+                    f"http://localhost:{PROXY_PORT}/v1/models",
+                    headers={"Authorization": f"Bearer {master_key}"},
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    served_ids = {m.get("id", "") for m in data.get("data", [])}
+                    configured_aliases = {m["alias"] for m in chatgpt_configured}
+                    if configured_aliases & served_ids:
+                        log.debug("Browser OAuth validated — chatgpt models served by proxy")
+                        return AuthStatus.OK, "Authenticated via browser OAuth"
+                log.debug("Proxy /v1/models returned %d or no chatgpt models served", resp.status_code)
+            except Exception as e:
+                log.debug("Proxy /v1/models check failed: %s", e)
 
         log.debug("No auth evidence found")
         return AuthStatus.NOT_CONFIGURED, "Not authenticated with OpenAI"
@@ -194,9 +204,12 @@ class OpenAIProvider(BaseProvider):
         print(f"  └─────────────────────────────────────────────────────┘")
         print()
 
-        # Poll for auth success by checking logs AND trying a test call
+        # Poll for auth success by checking logs AND the proxy model list
         timeout = 300  # 5 minutes
         start = time.time()
+        master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+        # Determine which chatgpt/ model aliases are configured
+        chatgpt_aliases = {m["alias"] for m in config.list_models() if m["model"].startswith("chatgpt/")}
         while time.time() - start < timeout:
             # Check logs for auth patterns
             logs = container.get_logs_since(since)
@@ -204,23 +217,24 @@ class OpenAIProvider(BaseProvider):
                 print("\n  ✓ Authenticated with OpenAI via browser OAuth!")
                 return True, "Authenticated via browser OAuth"
 
-            # Also try a lightweight proxy health check — if the device code
-            # was entered, LiteLLM may have silently picked up the session
-            try:
-                resp = requests.post(
-                    "http://localhost:2555/v1/chat/completions",
-                    headers={"Authorization": "Bearer " + (config.get_env("LITELLM_MASTER_KEY") or "sk-1234")},
-                    json={"model": list(self.models.values())[0].split("/")[-1],
-                          "messages": [{"role": "user", "content": "hi"}],
-                          "max_tokens": 1},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    print("\n  ✓ Authenticated with OpenAI via browser OAuth!")
-                    return True, "Authenticated via browser OAuth"
-                log.debug("Test call returned %d", resp.status_code)
-            except Exception:
-                pass
+            # Lightweight proxy check — query /v1/models (no billing) to see
+            # if chatgpt/ models are now being served after login
+            if chatgpt_aliases:
+                try:
+                    resp = requests.get(
+                        f"http://localhost:{PROXY_PORT}/v1/models",
+                        headers={"Authorization": f"Bearer {master_key}"},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        served_ids = {m.get("id", "") for m in data.get("data", [])}
+                        if chatgpt_aliases & served_ids:
+                            print("\n  ✓ Authenticated with OpenAI via browser OAuth!")
+                            return True, "Authenticated via browser OAuth"
+                    log.debug("Proxy /v1/models returned %d", resp.status_code)
+                except Exception:
+                    pass
 
             elapsed = int(time.time() - start)
             remaining = timeout - elapsed
