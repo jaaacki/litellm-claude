@@ -38,6 +38,9 @@ def show_help():
     print("  login [provider]  Authenticate with a provider")
     print("                    No arg: show auth status for all providers")
     print()
+    print("Tools:")
+    print("  claude [args]   Launch Claude Code through the proxy")
+    print()
     print("Options:")
     print("  --verbose, -v   Enable debug logging")
 
@@ -491,6 +494,45 @@ def cmd_remove():
         sys.exit(1)
 
 
+def cmd_claude(extra_args):
+    """Launch Claude Code routed through the LiteLLM proxy."""
+    import shutil
+    import subprocess
+    import container
+
+    # Find claude binary
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("  ✗ Claude Code CLI not found. Install it first:")
+        print("    npm install -g @anthropic-ai/claude-code")
+        sys.exit(1)
+
+    # Ensure proxy is running
+    running, _ = container.status()
+    if not running:
+        print("  Starting proxy...")
+        container.up()
+        if not container.wait_healthy():
+            print("  ✗ Proxy failed to start.")
+            sys.exit(1)
+
+    # Check that ANTHROPIC_API_KEY exists in environment
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("  ✗ ANTHROPIC_API_KEY not set in your shell environment.")
+        print("    Export it first: export ANTHROPIC_API_KEY=sk-ant-...")
+        sys.exit(1)
+
+    # Launch claude with proxy base URL
+    # The /anthropic endpoint passes through to Anthropic's API directly
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}/anthropic"
+    log.debug("Launching Claude Code with ANTHROPIC_BASE_URL=%s", env["ANTHROPIC_BASE_URL"])
+
+    print(f"  Launching Claude Code through proxy (localhost:{PORT})...")
+    result = subprocess.run([claude_bin] + extra_args, env=env)
+    sys.exit(result.returncode)
+
+
 def main():
     import config
 
@@ -538,6 +580,8 @@ def main():
         cmd_add()
     elif cmd == "remove":
         cmd_remove()
+    elif cmd == "claude":
+        cmd_claude(args[1:])
     else:
         print(f"Unknown command: {cmd}")
         show_help()
