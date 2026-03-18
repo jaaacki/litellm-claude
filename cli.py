@@ -18,7 +18,7 @@ def _setup_logging(verbose=False):
 
 
 def show_help():
-    name = os.path.basename(sys.argv[0]) if sys.argv[0] else "./litellm.sh"
+    name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./litellm.sh")
     print("LiteLLM Gateway CLI")
     print(f"Usage: {name} [COMMAND] [OPTIONS]")
     print()
