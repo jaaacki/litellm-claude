@@ -21,16 +21,24 @@ class OpenAIProvider(BaseProvider):
         "browser_oauth": [],
         "api_key": ["OPENAI_API_KEY"],
     }
+    # ChatGPT subscription models (browser OAuth, chatgpt/ prefix)
     models = {
-        "gpt-5": "chatgpt/gpt-5",
-        "gpt-4o": "chatgpt/gpt-4o",
-        "gpt-4o-mini": "chatgpt/gpt-4o-mini",
+        "gpt-5.4": "chatgpt/gpt-5.4",
+        "gpt-5.4-pro": "chatgpt/gpt-5.4-pro",
+        "gpt-5.3-codex": "chatgpt/gpt-5.3-codex",
+        "gpt-5.3-codex-spark": "chatgpt/gpt-5.3-codex-spark",
+        "gpt-5.3-instant": "chatgpt/gpt-5.3-instant",
+        "gpt-5.3-chat-latest": "chatgpt/gpt-5.3-chat-latest",
     }
 
+    # OpenAI API key models (openai/ prefix)
     _api_key_models = {
-        "gpt-5": "openai/gpt-5",
-        "gpt-4o": "openai/gpt-4o",
-        "gpt-4o-mini": "openai/gpt-4o-mini",
+        "gpt-5.4": "openai/gpt-5.4",
+        "gpt-5.4-pro": "openai/gpt-5.4-pro",
+        "gpt-5.3-instant": "openai/gpt-5.3-instant",
+        "o3": "openai/o3",
+        "o3-pro": "openai/o3-pro",
+        "o4-mini": "openai/o4-mini",
     }
 
     def get_model_string(self, alias, auth_type=None):
@@ -83,7 +91,7 @@ class OpenAIProvider(BaseProvider):
             resp = requests.post(
                 "http://localhost:2555/v1/chat/completions",
                 headers={"Authorization": f"Bearer {master_key}"},
-                json={"model": "gpt-5",
+                json={"model": "gpt-5.4",
                       "messages": [{"role": "user", "content": "hi"}],
                       "max_tokens": 1},
                 timeout=15,
