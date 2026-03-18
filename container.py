@@ -87,16 +87,71 @@ def _check_docker():
         sys.exit(1)
 
 
+PROXY_PID_FILE = os.path.join(DIR, ".proxy.pid")
+PROXY_SCRIPT = os.path.join(DIR, "proxy.py")
+PROXY_PORT = 2555
+
+
+def _start_proxy():
+    """Start the system message rewriter proxy in the background."""
+    _stop_proxy()  # Clean up any stale process
+    if not os.path.exists(PROXY_SCRIPT):
+        log.debug("proxy.py not found, skipping proxy start")
+        return
+    venv_python = os.path.join(DIR, ".venv", "bin", "python")
+    python = venv_python if os.path.exists(venv_python) else "python3"
+    proc = subprocess.Popen(
+        [python, PROXY_SCRIPT, str(PROXY_PORT)],
+        cwd=DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    with open(PROXY_PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+    log.debug("Started proxy (pid=%d) on port %d", proc.pid, PROXY_PORT)
+
+
+def _stop_proxy():
+    """Stop the rewriter proxy if running."""
+    if not os.path.exists(PROXY_PID_FILE):
+        return
+    try:
+        with open(PROXY_PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 15)  # SIGTERM
+        log.debug("Stopped proxy (pid=%d)", pid)
+    except (ProcessLookupError, ValueError, OSError):
+        pass
+    finally:
+        try:
+            os.unlink(PROXY_PID_FILE)
+        except OSError:
+            pass
+
+
+def _proxy_running():
+    """Check if the proxy process is alive."""
+    if not os.path.exists(PROXY_PID_FILE):
+        return False
+    try:
+        with open(PROXY_PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # Check if alive
+        return True
+    except (ProcessLookupError, ValueError, OSError):
+        return False
+
+
 def up():
     _check_docker()
     ok, _ = _run(["up", "-d"])
     if ok:
-        print("Service started on http://localhost:2555")
+        _start_proxy()
+        print(f"Service started on http://localhost:{PROXY_PORT}")
     return ok
 
 
 def down():
     _check_docker()
+    _stop_proxy()
     ok, _ = _run(["down"])
     return ok
 
@@ -106,6 +161,8 @@ def restart():
     _check_docker()
     log.debug("Recreating container with --force-recreate to pick up env/config changes")
     ok, _ = _run(["up", "-d", "--force-recreate"])
+    if ok:
+        _start_proxy()
     return ok
 
 
