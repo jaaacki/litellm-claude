@@ -229,7 +229,11 @@ def _needs_openai_translation(body_bytes):
 
 
 def _anthropic_to_openai(body_bytes):
-    """Convert Anthropic /v1/messages request body to OpenAI /v1/chat/completions format."""
+    """Convert Anthropic /v1/messages request to OpenAI /v1/chat/completions format.
+
+    Handles: system messages, text content, tool definitions, tool_use (assistant),
+    and tool_result (user) blocks for full agentic coding tool support.
+    """
     data = json.loads(body_bytes)
     messages = []
 
@@ -246,20 +250,77 @@ def _anthropic_to_openai(body_bytes):
             if text:
                 messages.append({"role": "system", "content": text})
 
-    # Convert messages
+    # Convert messages (handles text, tool_use, tool_result content blocks)
     for msg in data.get("messages", []):
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        if isinstance(content, list):
-            # Flatten content blocks to text
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    text_parts.append(block)
-            content = "\n".join(text_parts)
-        messages.append({"role": role, "content": content})
+
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+
+        if not isinstance(content, list):
+            messages.append({"role": role, "content": str(content) if content else ""})
+            continue
+
+        # Process content blocks
+        text_parts = []
+        tool_calls = []
+        tool_results = []
+
+        for block in content:
+            if not isinstance(block, dict):
+                text_parts.append(str(block))
+                continue
+            btype = block.get("type", "")
+
+            if btype == "text":
+                text_parts.append(block.get("text", ""))
+
+            elif btype == "tool_use":
+                # Assistant's tool call → OpenAI tool_calls
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {})),
+                    },
+                })
+
+            elif btype == "tool_result":
+                # User's tool result → OpenAI tool role message
+                result_content = block.get("content", "")
+                if isinstance(result_content, list):
+                    result_content = "\n".join(
+                        b.get("text", "") if isinstance(b, dict) else str(b)
+                        for b in result_content
+                    )
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id", ""),
+                    "content": str(result_content),
+                })
+
+        # Emit messages in the right order
+        if role == "assistant":
+            msg_obj = {"role": "assistant"}
+            text = "\n".join(t for t in text_parts if t)
+            if text:
+                msg_obj["content"] = text
+            else:
+                msg_obj["content"] = None
+            if tool_calls:
+                msg_obj["tool_calls"] = tool_calls
+            messages.append(msg_obj)
+        elif tool_results:
+            # tool_result blocks → separate tool role messages
+            if text_parts and any(t.strip() for t in text_parts):
+                messages.append({"role": "user", "content": "\n".join(text_parts)})
+            for tr in tool_results:
+                messages.append(tr)
+        else:
+            messages.append({"role": role, "content": "\n".join(text_parts) if text_parts else ""})
 
     openai_body = {
         "model": data.get("model"),
@@ -272,11 +333,29 @@ def _anthropic_to_openai(body_bytes):
     if data.get("stream"):
         openai_body["stream"] = True
 
+    # Convert Anthropic tools → OpenAI tools
+    tools = data.get("tools")
+    if tools:
+        openai_tools = []
+        for tool in tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {}),
+                },
+            })
+        openai_body["tools"] = openai_tools
+
     return json.dumps(openai_body).encode()
 
 
 def _openai_to_anthropic(response_bytes):
-    """Convert OpenAI /v1/chat/completions response to Anthropic /v1/messages format."""
+    """Convert OpenAI /v1/chat/completions response to Anthropic /v1/messages format.
+
+    Handles text content and tool_calls (function calling).
+    """
     try:
         data = json.loads(response_bytes)
     except (ValueError, TypeError):
@@ -284,11 +363,37 @@ def _openai_to_anthropic(response_bytes):
 
     choices = data.get("choices", [])
     content = []
+    stop_reason = "end_turn"
+
     if choices:
         msg = choices[0].get("message", {})
-        text = _strip_think_tags(msg.get("content", ""))
+        finish_reason = choices[0].get("finish_reason", "stop")
+
+        # Text content
+        text = _strip_think_tags(msg.get("content", "") or "")
         if text:
             content.append({"type": "text", "text": text})
+
+        # Tool calls
+        tool_calls = msg.get("tool_calls", [])
+        if tool_calls:
+            stop_reason = "tool_use"
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except (ValueError, TypeError):
+                    args = {}
+                content.append({
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "input": args,
+                })
+        elif finish_reason == "stop":
+            stop_reason = "end_turn"
+        elif finish_reason == "length":
+            stop_reason = "max_tokens"
 
     usage = data.get("usage", {})
     anthropic_resp = {
@@ -297,7 +402,8 @@ def _openai_to_anthropic(response_bytes):
         "role": "assistant",
         "content": content,
         "model": data.get("model", ""),
-        "stop_reason": choices[0].get("finish_reason", "end_turn") if choices else "end_turn",
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
         "usage": {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
@@ -478,15 +584,19 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
         started = False
-        content_started = False
+        content_block_index = 0  # tracks current content block index
+        text_block_open = False
         msg_id = ""
         model_name = ""
         input_tokens = 0
         output_tokens = 0
-        # Think-tag state machine: buffer text until we know we're past the think block
+        # Think-tag state machine
         in_think = False
-        think_buf = ""  # buffers partial text that might contain <think> or </think>
-        past_think = False  # once True, no more think tags expected — stream directly
+        think_buf = ""
+        past_think = False
+        # Tool call accumulation: {index: {"id": str, "name": str, "arguments": str}}
+        tool_calls = {}
+        tool_blocks_started = set()  # tool call indices we've sent content_block_start for
         buf = b""
         done = False
         start_time = time.monotonic()
@@ -499,14 +609,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         def _send_text_delta(text):
-            nonlocal content_started
+            nonlocal text_block_open, content_block_index
             if not text:
                 return
-            if not content_started:
-                content_started = True
-                _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n")
+            if not text_block_open:
+                text_block_open = True
+                _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': content_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n")
                 _send_event("event: ping\ndata: {\"type\": \"ping\"}\n\n")
-            evt = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
+            evt = {"type": "content_block_delta", "index": content_block_index, "delta": {"type": "text_delta", "text": text}}
             _send_event(f"event: content_block_delta\ndata: {json.dumps(evt)}\n\n")
 
         def _process_text(text):
@@ -603,15 +713,53 @@ class Handler(BaseHTTPRequestHandler):
                         }
                         _send_event(f"event: message_start\ndata: {json.dumps(evt)}\n\n")
 
+                    # Handle text content
                     text = delta.get("content", "")
                     if text:
                         output_tokens += 1
                         _process_text(text)
 
+                    # Handle tool calls
+                    delta_tool_calls = delta.get("tool_calls", [])
+                    for tc in delta_tool_calls:
+                        tc_idx = tc.get("index", 0)
+                        fn = tc.get("function", {})
+
+                        if tc_idx not in tool_calls:
+                            tool_calls[tc_idx] = {"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": ""}
+
+                        if fn.get("name"):
+                            tool_calls[tc_idx]["name"] = fn["name"]
+                        if tc.get("id"):
+                            tool_calls[tc_idx]["id"] = tc["id"]
+                        if fn.get("arguments"):
+                            tool_calls[tc_idx]["arguments"] += fn["arguments"]
+
+                            # Stream the tool call arguments as input_json_delta
+                            if tc_idx not in tool_blocks_started:
+                                # Close text block if open
+                                if text_block_open:
+                                    _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': content_block_index})}\n\n")
+                                    content_block_index += 1
+                                    text_block_open = False
+                                tool_blocks_started.add(tc_idx)
+                                block_idx = content_block_index + tc_idx
+                                _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_idx, 'content_block': {'type': 'tool_use', 'id': tool_calls[tc_idx]['id'], 'name': tool_calls[tc_idx]['name'], 'input': {}}})}\n\n")
+
+                            block_idx = content_block_index + tc_idx
+                            evt = {"type": "content_block_delta", "index": block_idx, "delta": {"type": "input_json_delta", "partial_json": fn["arguments"]}}
+                            _send_event(f"event: content_block_delta\ndata: {json.dumps(evt)}\n\n")
+
                     if finish_reason:
-                        if content_started:
-                            _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n")
-                        stop = "end_turn" if finish_reason == "stop" else finish_reason
+                        # Close any open text block
+                        if text_block_open:
+                            _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': content_block_index})}\n\n")
+                        # Close any open tool blocks
+                        for tc_idx in sorted(tool_blocks_started):
+                            block_idx = content_block_index + (1 if text_block_open else 0) + tc_idx
+                            _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n")
+
+                        stop = "end_turn" if finish_reason == "stop" else "tool_use" if finish_reason == "tool_calls" else finish_reason
                         evt = {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": output_tokens}}
                         _send_event(f"event: message_delta\ndata: {json.dumps(evt)}\n\n")
                         _send_event("event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n")
