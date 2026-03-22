@@ -247,9 +247,15 @@ FUNC_BLOCK=$(cat <<FUNCEOF
 # Claude Code via LiteLLM Proxy (${MODEL})
 # Note: master key is read from .env at runtime (not embedded in profile)
 ${ALIAS_NAME}() {
-  local _mk
-  _mk=\$(grep "^LITELLM_MASTER_KEY=" "${ENV_PATH}" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
-  _mk="\${_mk:-sk-1234}"
+  local _mk _env="${ENV_PATH}"
+  if [ ! -r "\$_env" ]; then
+    echo "Warning: Cannot read \$_env — using default master key" >&2
+  fi
+  _mk=\$(grep "^LITELLM_MASTER_KEY=" "\$_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+  if [ -z "\$_mk" ]; then
+    _mk="sk-1234"
+    echo "Warning: LITELLM_MASTER_KEY not found in \$_env — using default" >&2
+  fi
   ANTHROPIC_BASE_URL="http://localhost:${PORT}" \\
   ANTHROPIC_MODEL="${MODEL}" \\
   ANTHROPIC_AUTH_TOKEN="\$_mk" \\
