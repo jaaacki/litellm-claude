@@ -43,7 +43,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def login(self, auth_type=None) -> tuple:
-        """Returns (success: bool, message_string)."""
+        """Returns (AuthStatus, message_string)."""
         pass
 
     def get_model_string(self, alias, auth_type=None):

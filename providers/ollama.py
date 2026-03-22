@@ -71,7 +71,7 @@ class OllamaProvider(BaseProvider):
     def login(self, auth_type=None):
         status, msg = self.validate()
         if status != AuthStatus.OK:
-            return False, msg
+            return status, msg
 
         print(f"  ✓ {msg}")
 
@@ -86,9 +86,9 @@ class OllamaProvider(BaseProvider):
                 try:
                     result = subprocess.run([ollama_bin, "login"], timeout=120)
                 except (OSError, subprocess.TimeoutExpired) as e:
-                    return False, f"ollama login failed: {e}"
+                    return AuthStatus.UNREACHABLE, f"ollama login failed: {e}"
                 if result.returncode != 0:
-                    return False, "ollama login failed"
+                    return AuthStatus.UNREACHABLE, "ollama login failed"
                 print("  ✓ Logged in to ollama.com")
 
         # Show available models
@@ -110,7 +110,7 @@ class OllamaProvider(BaseProvider):
             else:
                 print(f"  ✗ {pull_msg}")
 
-        return True, "Ollama ready"
+        return AuthStatus.OK, "Ollama ready"
 
     def discover_models(self):
         """Fetch available models from Ollama. Returns dict of alias -> litellm model string."""

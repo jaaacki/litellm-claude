@@ -41,10 +41,8 @@ class AlibabaProvider(BaseProvider):
         print(f"  Get one at: https://dashscope.console.aliyun.com/\n")
         key = input("  DASHSCOPE_API_KEY: ").strip()
         if not key:
-            return False, "No key entered."
+            return AuthStatus.INVALID, "No key entered."
         config.set_env("DASHSCOPE_API_KEY", key)
         # Validate the key
         status, msg = self.validate()
-        if status == AuthStatus.OK:
-            return True, msg
-        return False, msg
+        return status, msg

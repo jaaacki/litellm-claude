@@ -129,8 +129,9 @@ def cmd_login(provider_name=None):
     auth_type = None
     if len(provider.auth_types) == 0:
         # Provider manages its own auth (e.g. Ollama)
-        ok, msg = provider.login()
-        print(f"  {'✓' if ok else '✗'} {msg}")
+        ls, msg = provider.login()
+        icon = "✓" if ls == AuthStatus.OK else "?" if ls == AuthStatus.UNVERIFIED else "✗"
+        print(f"  {icon} {msg}")
         return
 
     if status == AuthStatus.OK:
@@ -152,18 +153,14 @@ def cmd_login(provider_name=None):
             print("  Invalid choice.")
             sys.exit(1)
 
-    ok, msg = provider.login(auth_type)
-    if ok:
+    login_status, msg = provider.login(auth_type)
+    if login_status == AuthStatus.OK:
         print(f"\n  ✓ {msg}")
+    elif login_status == AuthStatus.UNVERIFIED:
+        print(f"\n  ? {msg}")
     else:
-        # Check if provider has circumstantial evidence (UNVERIFIED)
-        # rather than a hard failure — branch on structured state, not prose
-        post_status, _ = provider.validate()
-        if post_status == AuthStatus.UNVERIFIED:
-            print(f"\n  ? {msg}")
-        else:
-            print(f"\n  ✗ {msg}")
-            sys.exit(1)
+        print(f"\n  ✗ {msg}")
+        sys.exit(1)
 
 
 def _print_restart_failure():
@@ -268,8 +265,8 @@ def _add_provider_first():
             status, msg = provider.validate()
             if status != AuthStatus.OK:
                 print(f"\n  Need to authenticate with {provider.display_name}.")
-                ok, msg = provider.login(auth_type)
-                if not ok:
+                ls, msg = provider.login(auth_type)
+                if ls not in (AuthStatus.OK, AuthStatus.UNVERIFIED):
                     print(f"\n  ✗ {msg}")
                     sys.exit(1)
                 print(f"  ✓ {msg}")
@@ -462,8 +459,8 @@ def _add_model_first():
                 else:
                     auth_type = provider.auth_types[0]
                 print(f"\n  Need to authenticate with {provider.display_name}.")
-                ok, msg = provider.login(auth_type)
-                if not ok:
+                ls, msg = provider.login(auth_type)
+                if ls not in (AuthStatus.OK, AuthStatus.UNVERIFIED):
                     print(f"\n  ✗ {msg}")
                     sys.exit(1)
                 print(f"  ✓ {msg}")

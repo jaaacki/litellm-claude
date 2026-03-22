@@ -71,6 +71,7 @@ _COUNTERS = {
     "stream_budget_killed": 0,
     "idle_timeout_inactive": 0,
     "truncated_stream": 0,
+    "invalid_request": 0,
 }
 
 
@@ -89,33 +90,46 @@ def _error_response(status_code, message):
     ).encode()
 
 
+def _validate_messages(body_bytes):
+    """Validate /v1/messages request schema. Returns error string or None."""
+    try:
+        data = json.loads(body_bytes)
+    except Exception:
+        return "Request body must be valid JSON"
+    if not isinstance(data, dict):
+        return "Request body must be a JSON object"
+    messages = data.get("messages")
+    if messages is None:
+        return None  # messages not required for all endpoints
+    if not isinstance(messages, list):
+        return "messages field must be a list"
+    for msg in messages:
+        if not isinstance(msg, dict) or "role" not in msg:
+            return "each message must be an object with a role field"
+    return None
+
+
 def strip_system(body_bytes):
     """Remove 'system' field, merge into first user message.
 
-    Returns (body_bytes_or_None, error_or_None).
-    On success or pass-through: (bytes, None).
-    On validation error: (None, error_string).
+    Caller MUST run _validate_messages() first.
+    Returns modified body bytes, or original bytes if no system field.
     """
     try:
         data = json.loads(body_bytes)
     except Exception:
-        return (None, "Request body must be valid JSON")
+        return body_bytes
 
     if not isinstance(data, dict):
-        return (None, "Request body must be a JSON object")
+        return body_bytes
 
     system = data.pop("system", None)
     if not system:
-        return (body_bytes, None)
+        return body_bytes
 
-    # When system is present, messages MUST be a valid non-empty list of
-    # message objects. Fail closed — do not forward malformed payloads.
     messages = data.get("messages")
     if not isinstance(messages, list) or len(messages) == 0:
-        return (None, "system requires a non-empty messages list")
-    for msg in messages:
-        if not isinstance(msg, dict) or "role" not in msg:
-            return (None, "each message must be an object with a role field")
+        return body_bytes  # validation already caught this
 
     if isinstance(system, str):
         text = system
@@ -140,7 +154,7 @@ def strip_system(body_bytes):
         else:
             messages.insert(0, {"role": "user", "content": text})
 
-    return (json.dumps(data).encode(), None)
+    return json.dumps(data).encode()
 
 
 def _is_streaming(resp):
@@ -189,10 +203,12 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
 
         if method == "POST" and "/v1/messages" in self.path:
-            body, err = strip_system(body)
+            err = _validate_messages(body)
             if err:
+                _COUNTERS["invalid_request"] += 1
                 self._send_error(400, err)
                 return
+            body = strip_system(body)
 
         conn = http.client.HTTPConnection(LITELLM_HOST, LITELLM_PORT, timeout=CONNECT_TIMEOUT)
         try:

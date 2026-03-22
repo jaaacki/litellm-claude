@@ -163,21 +163,17 @@ class OpenAIProvider(BaseProvider):
         print(f"  Get one at: https://platform.openai.com/api-keys\n")
         key = input("  OPENAI_API_KEY: ").strip()
         if not key:
-            return False, "No key entered."
+            return AuthStatus.INVALID, "No key entered."
         config.set_env("OPENAI_API_KEY", key)
         status, msg = self.validate()
-        if status == AuthStatus.OK:
-            return True, msg
-        if status == AuthStatus.UNVERIFIED:
-            return False, f"Key saved but could not verify: {msg}"
-        return False, msg
+        return status, msg
 
     def _login_browser(self):
         """Drive the browser OAuth flow by reading container logs."""
         # Pre-check
         status, msg = self.validate()
         if status == AuthStatus.OK:
-            return True, f"Already authenticated. {msg}"
+            return AuthStatus.OK, f"Already authenticated. {msg}"
 
         # Ensure container is running
         running, _ = container.status()
@@ -185,7 +181,7 @@ class OpenAIProvider(BaseProvider):
             print("  Container not running. Starting it...")
             container.up()
             if not container.wait_healthy(30):
-                return False, "Container failed to start."
+                return AuthStatus.UNREACHABLE, "Container failed to start."
 
         # Capture timestamp before looking for URL
         since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -220,7 +216,7 @@ class OpenAIProvider(BaseProvider):
             print(".", end="", flush=True)
 
         if not login_url:
-            return False, (
+            return AuthStatus.UNREACHABLE, (
                 "Could not find login URL in container logs.\n"
                 "  Make sure you have a chatgpt/ model configured and run './litellm.sh logs' to debug."
             )
@@ -247,13 +243,13 @@ class OpenAIProvider(BaseProvider):
             logs = container.get_logs_since(since)
             if self._AUTH_LOG_PATTERN.search(logs):
                 print("\n  ? Browser OAuth may be active (log pattern detected, not independently verified)")
-                return False, "Browser OAuth may be active (log pattern detected, not independently verified)"
+                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (log pattern detected, not independently verified)"
 
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
             if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
                 print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
-                return False, "Browser OAuth may be active (models detected in proxy, not independently verified)"
+                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"
 
             elapsed = int(time.time() - start)
             remaining = timeout - elapsed
@@ -262,4 +258,4 @@ class OpenAIProvider(BaseProvider):
             time.sleep(3)
 
         print()
-        return False, "Login timed out after 5 minutes. Run './litellm.sh login openai' to try again."
+        return AuthStatus.UNREACHABLE, "Login timed out after 5 minutes. Run './litellm.sh login openai' to try again."
