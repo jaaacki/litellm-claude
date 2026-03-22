@@ -79,18 +79,26 @@ def list_models():
         alias = entry.get("model_name", "")
         params = entry.get("litellm_params", {})
         model = params.get("model", "")
-        provider = _provider_from_model(model)
+        provider = _provider_from_model(model, params)
         results.append({"alias": alias, "model": model, "provider": provider})
     return results
 
 
-def _provider_from_model(model_str):
+def _provider_from_model(model_str, litellm_params=None):
     """Map litellm model prefix to provider name. Returns the raw prefix for unknown providers."""
     prefix = model_str.split("/")[0] if "/" in model_str else ""
+
+    # For openai/ prefix, check api_base to distinguish actual OpenAI from
+    # providers using OpenAI-compatible endpoints (e.g. MiniMax)
+    if prefix == "openai" and litellm_params:
+        api_base = litellm_params.get("api_base", "")
+        if "minimax" in api_base:
+            return "minimax"
+
     mapping = {
         "chatgpt": "openai",
         "openai": "openai",
-        "dashscope": "alibaba",
+        "minimax": "minimax",
         "ollama": "ollama",
     }
     return mapping.get(prefix, prefix or "unknown")

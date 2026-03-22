@@ -8,15 +8,17 @@ class MiniMaxProvider(BaseProvider):
     display_name = "MiniMax"
     auth_types = ["api_key"]
     env_vars = {"api_key": ["MINIMAX_API_KEY"]}
+    # Use openai/ prefix so LiteLLM translates via OpenAI-compatible endpoint
+    # (minimax/ prefix tries the Anthropic-native path which requires a paid plan)
     models = {
-        "MiniMax-M2.7": "minimax/MiniMax-M2.7",
-        "MiniMax-M2.5": "minimax/MiniMax-M2.5",
-        "MiniMax-Text-01": "minimax/MiniMax-Text-01",
+        "MiniMax-M2.7": "openai/MiniMax-M2.7",
+        "MiniMax-M2.5": "openai/MiniMax-M2.5",
+        "MiniMax-Text-01": "openai/MiniMax-Text-01",
     }
 
     def get_extra_params(self):
         """Extra litellm_params for MiniMax models."""
-        return {"api_base": self.API_BASE}
+        return {"api_base": f"{self.API_BASE}/v1", "api_key": config.get_env("MINIMAX_API_KEY")}
 
     # LiteLLM appends /v1/ internally, so no trailing /v1 here
     API_BASE = "https://api.minimax.io"
