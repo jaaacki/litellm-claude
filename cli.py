@@ -709,7 +709,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     os.environ["ANTHROPIC_MODEL"] = model["alias"]
     os.environ["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
     if thinking:
-        os.environ["ANTHROPIC_CUSTOM_HEADERS"] = json.dumps({"x-thinking-effort": thinking})
+        os.environ["ANTHROPIC_CUSTOM_HEADERS"] = f"x-thinking-effort: {thinking}"
         print(f"  Thinking effort: {thinking}")
     os.execvp(claude_bin, [claude_bin] + extra_args)
 
