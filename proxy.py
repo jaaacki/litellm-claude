@@ -374,16 +374,16 @@ class Handler(BaseHTTPRequestHandler):
                      method, self.path, _model or "-", resp.status, _t1 - _t0, _xlate)
 
             if _is_streaming(resp):
-                self._stream_response(resp, conn)
+                self._stream_response(resp, conn, translate_response)
             elif resp.getheader("Content-Length") is None:
-                self._stream_response(resp, conn)
+                self._stream_response(resp, conn, translate_response)
             else:
                 try:
                     upstream_cl = int(resp.getheader("Content-Length"))
                 except (TypeError, ValueError):
                     upstream_cl = 0
                 if upstream_cl > MAX_RESPONSE_BODY:
-                    self._stream_response(resp, conn)
+                    self._stream_response(resp, conn, translate_response)
                 else:
                     self._buffer_response(resp, conn, translate_response)
         except socket.timeout as e:
@@ -423,9 +423,122 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(buf)
 
-    def _stream_response(self, resp, conn):
+    def _stream_translated(self, resp, conn):
+        """Read OpenAI SSE stream, translate each chunk to Anthropic SSE events inline."""
+        try:
+            resp.fp.raw._sock.settimeout(STREAM_IDLE_TIMEOUT)
+        except (AttributeError, TypeError):
+            pass
+
+        started = False
+        content_started = False
+        msg_id = ""
+        model_name = ""
+        input_tokens = 0
+        output_tokens = 0
+        buf = b""
+        start_time = time.monotonic()
+
+        def _send_event(event_str):
+            """Send one Anthropic SSE event as a chunked frame."""
+            event_bytes = event_str.encode()
+            self.wfile.write(f"{len(event_bytes):x}\r\n".encode())
+            self.wfile.write(event_bytes)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+
+        try:
+            while True:
+                if time.monotonic() - start_time > MAX_STREAM_LIFETIME:
+                    log.warning("Translated stream lifetime exceeded for %s", self.path)
+                    break
+                data = resp.read(4096)
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str or not line_str.startswith("data: "):
+                        continue
+                    data_str = line_str[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except (ValueError, TypeError):
+                        continue
+
+                    if not msg_id:
+                        msg_id = chunk.get("id", "msg_translated")
+                        model_name = chunk.get("model", "")
+                    usage = chunk.get("usage", {})
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", input_tokens)
+                        output_tokens = usage.get("completion_tokens", output_tokens)
+
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+                    finish_reason = choices[0].get("finish_reason")
+
+                    if not started:
+                        started = True
+                        evt = {
+                            "type": "message_start",
+                            "message": {
+                                "id": msg_id, "type": "message", "role": "assistant",
+                                "content": [], "model": model_name,
+                                "stop_reason": None, "stop_sequence": None,
+                                "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+                            },
+                        }
+                        _send_event(f"event: message_start\ndata: {json.dumps(evt)}\n\n")
+
+                    text = delta.get("content", "")
+                    if text and not content_started:
+                        content_started = True
+                        _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n")
+                        _send_event("event: ping\ndata: {\"type\": \"ping\"}\n\n")
+
+                    if text:
+                        evt = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
+                        _send_event(f"event: content_block_delta\ndata: {json.dumps(evt)}\n\n")
+
+                    if finish_reason:
+                        if content_started:
+                            _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n")
+                        stop = "end_turn" if finish_reason == "stop" else finish_reason
+                        evt = {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": output_tokens}}
+                        _send_event(f"event: message_delta\ndata: {json.dumps(evt)}\n\n")
+                        _send_event("event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n")
+
+        except (socket.timeout, BrokenPipeError, ConnectionResetError, OSError) as e:
+            log.debug("Translated stream ended: %s", e)
+        finally:
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _stream_response(self, resp, conn, translate=False):
         """Forward an SSE / chunked response incrementally with idle timeout."""
         self.send_response(resp.status)
+
+        if translate and resp.status == 200:
+            # Send Anthropic-style SSE headers instead of forwarding upstream headers
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self._stream_translated(resp, conn)
+            return
+
         for k, v in resp.getheaders():
             if k.lower() not in ("transfer-encoding", "connection", "keep-alive", "content-length"):
                 self.send_header(k, v)
