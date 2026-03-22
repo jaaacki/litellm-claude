@@ -3,7 +3,6 @@ import logging
 import sys
 import os
 
-DIR = os.path.dirname(os.path.abspath(__file__))
 from container import PROXY_PORT as PORT
 from providers.base import AuthStatus
 
@@ -171,11 +170,81 @@ def _print_restart_failure():
         print(f"    Your previous config was backed up to litellm_config.yaml.bak")
 
 
-def cmd_add():
-    import config
-    import container
-    import providers
+def _choose_auth_type(provider):
+    """Prompt user to choose auth type. Returns auth_type string or None."""
+    if not provider.auth_types:
+        return None
+    if len(provider.auth_types) == 1:
+        return provider.auth_types[0]
+    print(f"\n  Auth method for {provider.display_name}:\n")
+    for i, at in enumerate(provider.auth_types, 1):
+        label = at.replace("_", " ").title()
+        print(f"    [{i}] {label}")
+    print()
+    choice = input("  Choose [1]: ").strip() or "1"
+    try:
+        return provider.auth_types[int(choice) - 1]
+    except (ValueError, IndexError):
+        print("  Invalid choice.")
+        sys.exit(1)
 
+
+def _ensure_authenticated(provider, auth_type):
+    """Check auth and login if needed. Exits on failure."""
+    status, msg = provider.validate()
+    if status == AuthStatus.OK:
+        return
+    print(f"\n  Need to authenticate with {provider.display_name}.")
+    login_status, msg = provider.login(auth_type)
+    if login_status == AuthStatus.OK:
+        print(f"  \u2713 {msg}")
+    elif login_status == AuthStatus.UNVERIFIED:
+        print(f"  ? {msg}")
+        print(f"  Aborting \u2014 cannot add models with unverified auth.")
+        sys.exit(1)
+    else:
+        print(f"\n  {msg}")
+        sys.exit(1)
+
+
+def _restart_and_report(context_msg, provider=None, added=None):
+    """Restart container and report status. Exits on failure.
+
+    Args:
+        context_msg: What triggered the restart (for log message)
+        provider: Optional provider to validate after restart
+        added: Optional list of added model aliases
+    """
+    import container
+
+    print(f"\n  Restarting container...")
+    log.debug("Restarting after %s", context_msg)
+    if not container.restart():
+        _print_restart_failure()
+        sys.exit(1)
+    if not container.wait_healthy():
+        _print_restart_failure()
+        sys.exit(1)
+
+    if provider and added:
+        status, msg = provider.validate()
+        if status == AuthStatus.OK:
+            print(f"  Container is running. Added: {', '.join(added)}. {msg}")
+        else:
+            print(f"  Container is running. Added: {', '.join(added)}")
+            print(f"    Auth check: {msg}")
+    elif provider:
+        status, msg = provider.validate()
+        if status == AuthStatus.OK:
+            print(f"  Container is running. {msg}")
+        else:
+            print(f"  Container is running.")
+            print(f"    Auth check: {msg}")
+    else:
+        print(f"  Container is running.")
+
+
+def cmd_add():
     print("\n  What would you like to add?\n")
     print("    [1] A provider (then pick models)")
     print("    [2] A specific model")
@@ -193,7 +262,6 @@ def cmd_add():
 
 def _add_provider_first():
     import config
-    import container
     import providers
 
     all_provs = providers.all_providers()
@@ -215,6 +283,9 @@ def _add_provider_first():
             print(f"\n  ✗ {msg}")
             sys.exit(1)
         catalog = provider.discover_models()
+        if catalog is None:
+            print(f"\n  Cannot reach Ollama. Check that it's running.")
+            sys.exit(1)
 
         # --- Ollama model selection (with manual input + pull) ---
         aliases = list(catalog.keys())
@@ -244,37 +315,10 @@ def _add_provider_first():
             selected, catalog = _ollama_manual_input(provider, catalog)
 
     else:
-        # --- Non-Ollama providers (existing logic) ---
-        auth_type = None
-        if provider.auth_types:
-            if len(provider.auth_types) == 1:
-                auth_type = provider.auth_types[0]
-            else:
-                print(f"\n  Auth method for {provider.display_name}:\n")
-                for i, at in enumerate(provider.auth_types, 1):
-                    label = at.replace("_", " ").title()
-                    print(f"    [{i}] {label}")
-                print()
-                at_choice = input("  Choose [1]: ").strip() or "1"
-                try:
-                    auth_type = provider.auth_types[int(at_choice) - 1]
-                except (ValueError, IndexError):
-                    print("  Invalid choice.")
-                    sys.exit(1)
-
-            status, msg = provider.validate()
-            if status != AuthStatus.OK:
-                print(f"\n  Need to authenticate with {provider.display_name}.")
-                ls, msg = provider.login(auth_type)
-                if ls == AuthStatus.OK:
-                    print(f"  ✓ {msg}")
-                elif ls == AuthStatus.UNVERIFIED:
-                    print(f"  ? {msg}")
-                    print(f"  Aborting — cannot add models with unverified auth.")
-                    sys.exit(1)
-                else:
-                    print(f"\n  ✗ {msg}")
-                    sys.exit(1)
+        # --- Non-Ollama providers ---
+        auth_type = _choose_auth_type(provider)
+        if auth_type:
+            _ensure_authenticated(provider, auth_type)
 
         if auth_type and hasattr(provider, "get_models_for_auth"):
             catalog = provider.get_models_for_auth(auth_type)
@@ -336,21 +380,7 @@ def _add_provider_first():
         print("\n  No models added.")
         return
 
-    print(f"\n  Restarting container...")
-    log.debug("Restarting after adding models: %s", added)
-    if not container.restart():
-        _print_restart_failure()
-        sys.exit(1)
-    if container.wait_healthy():
-        status, msg = provider.validate()
-        if status == AuthStatus.OK:
-            print(f"  ✓ Container is running. Added: {', '.join(added)}. {msg}")
-        else:
-            print(f"  ⚠ Container is running. Added: {', '.join(added)}")
-            print(f"    Auth check: {msg}")
-    else:
-        _print_restart_failure()
-        sys.exit(1)
+    _restart_and_report("adding models", provider=provider, added=added)
 
 
 def _ollama_manual_input(provider, catalog):
@@ -377,7 +407,6 @@ def _ollama_manual_input(provider, catalog):
 
 def _add_model_first():
     import config
-    import container
     import providers
 
     combined = {}
@@ -386,9 +415,12 @@ def _add_model_first():
         if p.name == "ollama":
             ollama_provider = p
             ollama_models = p.discover_models()
-            if not ollama_models:
-                print("  (Ollama not running — skipping its models)")
-            else:
+            if ollama_models is None:
+                print("  (Ollama not reachable \u2014 skipping its models)")
+                ollama_models = {}
+            elif not ollama_models:
+                print("  (Ollama has no models \u2014 pull one first)")
+            if ollama_models:
                 for alias, model_str in ollama_models.items():
                     key = f"{alias} ({p.display_name})"
                     combined[key] = (p, alias, model_str)
@@ -445,37 +477,12 @@ def _add_model_first():
 
         provider, alias, model_str = combined[key]
 
-        auth_type = None
         if provider.auth_types:
             status, msg = provider.validate()
             if status != AuthStatus.OK:
-                if len(provider.auth_types) > 1:
-                    print(f"\n  Auth method for {provider.display_name}:\n")
-                    for i, at in enumerate(provider.auth_types, 1):
-                        label = at.replace("_", " ").title()
-                        print(f"    [{i}] {label}")
-                    print()
-                    at_choice = input("  Choose [1]: ").strip() or "1"
-                    try:
-                        auth_type = provider.auth_types[int(at_choice) - 1]
-                    except (ValueError, IndexError):
-                        print("  Invalid choice.")
-                        sys.exit(1)
-                else:
-                    auth_type = provider.auth_types[0]
-                print(f"\n  Need to authenticate with {provider.display_name}.")
-                ls, msg = provider.login(auth_type)
-                if ls == AuthStatus.OK:
-                    print(f"  ✓ {msg}")
-                elif ls == AuthStatus.UNVERIFIED:
-                    print(f"  ? {msg}")
-                    print(f"  Aborting — cannot add models with unverified auth.")
-                    sys.exit(1)
-                else:
-                    print(f"\n  ✗ {msg}")
-                    sys.exit(1)
+                auth_type = _choose_auth_type(provider)
+                _ensure_authenticated(provider, auth_type)
             else:
-                # Already authenticated — detect which auth type is active
                 auth_type = provider.detect_auth_type()
 
             # Resolve model string based on auth type
@@ -507,26 +514,11 @@ def _add_model_first():
         sys.exit(1)
     print(f"  ✓ {msg}")
 
-    print(f"\n  Restarting container...")
-    log.debug("Restarting after adding model: %s", final_alias)
-    if not container.restart():
-        _print_restart_failure()
-        sys.exit(1)
-    if container.wait_healthy():
-        status, msg = provider.validate()
-        if status == AuthStatus.OK:
-            print(f"  ✓ Container is running with '{final_alias}'. {msg}")
-        else:
-            print(f"  ⚠ Container is running with '{final_alias}'")
-            print(f"    Auth check: {msg}")
-    else:
-        _print_restart_failure()
-        sys.exit(1)
+    _restart_and_report(f"adding model {final_alias}", provider=provider, added=[final_alias])
 
 
 def cmd_remove():
     import config
-    import container
     import providers
 
     models = config.list_models()
@@ -588,16 +580,7 @@ def cmd_remove():
                             config.remove_env(var)
                         print(f"  ✓ Cleaned up env vars.")
 
-    print(f"\n  Restarting container...")
-    log.debug("Restarting after removing models")
-    if not container.restart():
-        _print_restart_failure()
-        sys.exit(1)
-    if container.wait_healthy():
-        print(f"  ✓ Container is running.")
-    else:
-        _print_restart_failure()
-        sys.exit(1)
+    _restart_and_report("removing models")
 
 
 def cmd_claude(extra_args):
