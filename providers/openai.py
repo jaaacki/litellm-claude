@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 import requests
 
 import config
-import container
-from container import PROXY_PORT
 from providers.base import BaseProvider, Status
 
 log = logging.getLogger("litellm-cli.openai")
@@ -100,6 +98,7 @@ class OpenAIProvider(BaseProvider):
         1. Container logs for auth-success patterns (primary)
         2. Proxy GET /v1/models to see if chatgpt/ models are served (no billing)
         """
+        import container
         cs, _ = container.status()
         if cs != Status.OK:
             return Status.NOT_CONFIGURED, "Container not running — cannot check browser auth"
@@ -131,6 +130,7 @@ class OpenAIProvider(BaseProvider):
         found=True means models detected. error is set on transport/parse failures.
         found=False with error=None means "checked successfully, models not present."
         """
+        from container import PROXY_PORT
         master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
         try:
             resp = requests.get(
@@ -190,6 +190,7 @@ class OpenAIProvider(BaseProvider):
 
     def _login_browser(self):
         """Drive the browser OAuth flow by reading container logs."""
+        import container
         # Pre-check
         status, msg = self.validate()
         if status == Status.OK:
