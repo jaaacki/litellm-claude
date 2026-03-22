@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import requests
 from providers.base import BaseProvider, AuthStatus
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger("litellm-cli.ollama")
 
 
 class OllamaProvider(BaseProvider):
@@ -46,20 +46,27 @@ class OllamaProvider(BaseProvider):
                 return f"{scheme}://host.docker.internal:{port}"
             # Non-localhost — use as-is (remote Ollama)
             return env_host
-        except Exception:
+        except (ValueError, AttributeError) as e:
+            log.warning("Failed to parse OLLAMA_HOST '%s', using default: %s", env_host, e)
             return self.DEFAULT_DOCKER_HOST
 
     def validate(self):
         host = self.OLLAMA_HOST
         try:
             resp = requests.get(f"{host}/api/tags", timeout=3)
-            if resp.status_code == 200:
-                return AuthStatus.OK, f"Ollama is reachable at {host}"
-            return AuthStatus.UNREACHABLE, f"Ollama returned status {resp.status_code}"
-        except requests.ConnectionError:
-            return AuthStatus.UNREACHABLE, f"Ollama is not running at {host}"
-        except requests.Timeout:
-            return AuthStatus.UNREACHABLE, "Ollama connection timed out"
+            if resp.status_code != 200:
+                return AuthStatus.UNREACHABLE, f"Ollama returned status {resp.status_code}"
+            ct = resp.headers.get("Content-Type", "")
+            if "json" not in ct:
+                return AuthStatus.UNREACHABLE, f"Ollama returned unexpected Content-Type: {ct}"
+            try:
+                resp.json()
+            except ValueError:
+                return AuthStatus.UNREACHABLE, "Ollama returned invalid JSON"
+            return AuthStatus.OK, f"Ollama is reachable at {host}"
+        except requests.RequestException as e:
+            log.warning("Ollama validate failed: %s", e)
+            return AuthStatus.UNREACHABLE, f"Cannot reach Ollama at {host}: {e}"
 
     def login(self, auth_type=None):
         status, msg = self.validate()
@@ -76,7 +83,10 @@ class OllamaProvider(BaseProvider):
             choice = input("\n  Login to ollama.com for cloud models? [y/N]: ").strip()
             if choice.lower() == "y":
                 print()
-                result = subprocess.run([ollama_bin, "login"])
+                try:
+                    result = subprocess.run([ollama_bin, "login"], timeout=120)
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    return False, f"ollama login failed: {e}"
                 if result.returncode != 0:
                     return False, "ollama login failed"
                 print("  ✓ Logged in to ollama.com")
@@ -108,28 +118,35 @@ class OllamaProvider(BaseProvider):
         try:
             resp = requests.get(f"{host}/api/tags", timeout=5)
             if resp.status_code != 200:
-                logger.warning(
+                log.warning(
                     "Ollama at %s returned HTTP %d — cannot discover models",
                     host, resp.status_code,
                 )
                 return {}
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError:
+                log.warning("Ollama at %s returned invalid JSON", host)
+                return {}
+            models_list = data.get("models", [])
+            if not isinstance(models_list, list):
+                log.warning(
+                    "Ollama at %s returned non-list 'models' field: %s",
+                    host, type(models_list).__name__,
+                )
+                return {}
             models = {}
-            for m in data.get("models", []):
+            for m in models_list:
+                if not isinstance(m, dict):
+                    continue
                 name = m.get("name", "")
-                if name:
-                    alias = name.replace(":latest", "")
-                    models[alias] = f"ollama/{name}"
+                if not isinstance(name, str) or not name:
+                    continue
+                alias = name.replace(":latest", "")
+                models[alias] = f"ollama/{name}"
             return models
-        except requests.ConnectionError:
-            logger.warning(
-                "Could not connect to Ollama at %s — is it running?", host
-            )
-            return {}
-        except requests.Timeout:
-            logger.warning(
-                "Connection to Ollama at %s timed out", host
-            )
+        except requests.RequestException as e:
+            log.warning("Could not reach Ollama at %s: %s", host, e)
             return {}
 
     def pull_model(self, model_name):
@@ -144,10 +161,20 @@ class OllamaProvider(BaseProvider):
             if resp.status_code != 200:
                 return False, f"Pull failed with status {resp.status_code}"
 
+            # Set socket idle timeout to detect stalled transfers
+            try:
+                resp.raw._fp.fp.raw._sock.settimeout(60)
+            except (AttributeError, TypeError):
+                pass
+
             last_status = ""
             for line in resp.iter_lines():
                 if line:
-                    data = json.loads(line)
+                    try:
+                        data = json.loads(line)
+                    except ValueError:
+                        log.debug("Skipping malformed NDJSON line: %s", line[:100])
+                        continue
                     status = data.get("status", "")
                     if "completed" in data and "total" in data:
                         total = data["total"]
@@ -158,10 +185,8 @@ class OllamaProvider(BaseProvider):
                     last_status = status
             print()
             return True, f"Pulled {model_name}"
-        except requests.ConnectionError:
-            return False, "Ollama is not running — cannot pull"
-        except requests.Timeout:
-            return False, "Pull timed out"
+        except requests.RequestException as e:
+            return False, f"Pull failed: {e}"
 
     def get_model_string(self, alias, auth_type=None):
         return f"ollama/{alias}"

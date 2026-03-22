@@ -10,6 +10,11 @@ log = logging.getLogger("litellm-cli.container")
 CONTAINER_NAME = "litellm-proxy"
 
 
+class DockerNotFoundError(RuntimeError):
+    """Raised when docker/docker-compose is not installed."""
+    pass
+
+
 def _docker_bin():
     """Find the real docker binary, bypassing shell aliases/proxies (e.g. rtk)."""
     for path in ["/usr/local/bin/docker", "/usr/bin/docker",
@@ -30,24 +35,22 @@ def _compose_cmd():
     docker = _docker_bin()
     try:
         result = subprocess.run(
-            [docker, "compose", "version"], capture_output=True, text=True
+            [docker, "compose", "version"], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
             _cached_compose_cmd = [docker, "compose"]
             return _cached_compose_cmd
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # Verify docker-compose exists before caching
     try:
         result = subprocess.run(
-            ["docker-compose", "version"], capture_output=True, text=True
+            ["docker-compose", "version"], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
             _cached_compose_cmd = ["docker-compose"]
             return _cached_compose_cmd
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # Neither found — cache and return docker-compose, let _run handle the error
     _cached_compose_cmd = ["docker-compose"]
     return _cached_compose_cmd
 
@@ -62,24 +65,29 @@ def _run(args, capture=False, stream=False):
             proc.wait()
             return proc.returncode == 0, ""
         result = subprocess.run(
-            cmd, cwd=DIR, capture_output=capture, text=True
+            cmd, cwd=DIR, capture_output=capture, text=True, timeout=120
         )
         if capture:
             return result.returncode == 0, result.stdout
         return result.returncode == 0, ""
+    except subprocess.TimeoutExpired:
+        log.warning("Docker compose command timed out: %s", " ".join(args))
+        return False, ""
     except FileNotFoundError:
-        print("Error: docker compose is required. Install Docker Desktop or docker-compose.")
-        sys.exit(1)
+        log.error("docker compose is required. Install Docker Desktop or docker-compose.")
+        raise DockerNotFoundError(
+            "docker compose is required. Install Docker Desktop or docker-compose."
+        )
 
 
 def _docker_running():
     """Check if Docker daemon is running."""
     try:
         result = subprocess.run(
-            [_docker_bin(), "info"], capture_output=True, text=True
+            [_docker_bin(), "info"], capture_output=True, text=True, timeout=30
         )
         return result.returncode == 0
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
@@ -100,10 +108,10 @@ def _is_proxy_process(pid):
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=10
         )
         return result.returncode == 0 and PROXY_SCRIPT in result.stdout
-    except (OSError, FileNotFoundError):
+    except (OSError, FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
@@ -119,11 +127,20 @@ def _start_proxy():
     venv_python = os.path.join(DIR, ".venv", "bin", "python")
     python = venv_python if os.path.exists(venv_python) else "python3"
     proxy_log = os.path.join(DIR, ".proxy.log")
-    log_fh = open(proxy_log, "a")
-    proc = subprocess.Popen(
-        [python, PROXY_SCRIPT, str(PROXY_PORT)],
-        cwd=DIR, stdout=log_fh, stderr=log_fh,
-    )
+    try:
+        log_fh = open(proxy_log, "a")
+    except OSError as e:
+        log.warning("Cannot open proxy log %s: %s", proxy_log, e)
+        return False
+    try:
+        proc = subprocess.Popen(
+            [python, PROXY_SCRIPT, str(PROXY_PORT)],
+            cwd=DIR, stdout=log_fh, stderr=log_fh,
+        )
+    except Exception:
+        log_fh.close()
+        raise
+    log_fh.close()  # Child inherits FD via fork; parent doesn't need it
     with open(PROXY_PID_FILE, "w") as f:
         f.write(str(proc.pid))
     log.debug("Started proxy (pid=%d) on port %d", proc.pid, PROXY_PORT)
@@ -247,22 +264,30 @@ def get_logs_since(timestamp):
     _check_docker()
     docker = _docker_bin()
     log.debug("Reading logs since %s via %s", timestamp, docker)
-    result = subprocess.run(
-        [docker, "logs", CONTAINER_NAME, "--since", timestamp],
-        capture_output=True, text=True, cwd=DIR,
-    )
-    return result.stdout + result.stderr
+    try:
+        result = subprocess.run(
+            [docker, "logs", CONTAINER_NAME, "--since", timestamp],
+            capture_output=True, text=True, cwd=DIR, timeout=30,
+        )
+        return result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        log.warning("docker logs --since timed out")
+        return ""
 
 
 def get_logs_tail(lines=200):
     """Get last N lines of container logs. Returns log text."""
     docker = _docker_bin()
     log.debug("Reading last %d log lines via %s", lines, docker)
-    result = subprocess.run(
-        [docker, "logs", CONTAINER_NAME, "--tail", str(lines)],
-        capture_output=True, text=True, cwd=DIR,
-    )
-    return result.stdout + result.stderr
+    try:
+        result = subprocess.run(
+            [docker, "logs", CONTAINER_NAME, "--tail", str(lines)],
+            capture_output=True, text=True, cwd=DIR, timeout=30,
+        )
+        return result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        log.warning("docker logs --tail timed out")
+        return ""
 
 
 def wait_healthy(timeout=30):
@@ -277,7 +302,7 @@ def wait_healthy(timeout=30):
             is_running = "Up" in output or "running" in output.lower()
             if is_running:
                 return True
-        except SystemExit:
+        except DockerNotFoundError:
             return False
         time.sleep(1)
     return False

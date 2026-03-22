@@ -15,6 +15,10 @@ ENV_EXAMPLE = os.path.join(DIR, ".env.example")
 
 # --- YAML helpers ---
 
+class MalformedConfig(dict):
+    """Sentinel subclass of dict indicating config was loaded from a malformed YAML file."""
+
+
 def _load_yaml():
     """Load litellm_config.yaml, return full dict."""
     if not os.path.exists(CONFIG_PATH):
@@ -27,7 +31,7 @@ def _load_yaml():
         print(f"Warning: litellm_config.yaml is malformed: {e}")
         if os.path.exists(CONFIG_BACKUP):
             print(f"  A backup exists at litellm_config.yaml.bak")
-        return {"model_list": [], "general_settings": {}}
+        return MalformedConfig({"model_list": [], "general_settings": {}})
     if "model_list" not in data:
         data["model_list"] = []
     return data
@@ -47,6 +51,11 @@ def _atomic_write(path, content_fn):
 
 def _save_yaml(data):
     """Backup then write litellm_config.yaml atomically."""
+    if isinstance(data, MalformedConfig):
+        raise ValueError(
+            "Refusing to save: config was loaded from a malformed file. "
+            "Fix litellm_config.yaml manually or restore from litellm_config.yaml.bak"
+        )
     if os.path.exists(CONFIG_PATH):
         shutil.copy2(CONFIG_PATH, CONFIG_BACKUP)
         log.debug("Backed up config to %s", CONFIG_BACKUP)
