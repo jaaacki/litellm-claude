@@ -21,7 +21,7 @@ There are two layers of proxying:
 The codebase enforces strict layer boundaries for error handling, logging, and I/O:
 
 - **proxy.py** (HTTP boundary) — uses `logging` module exclusively. Translates internal errors to HTTP JSON envelopes (`_error_response()`). Typed exception handlers map to HTTP status codes (504 timeout, 502 refused/error). One thread safety-net catch with `exc_info=True` traceback. No `print()`.
-- **config.py, container.py, providers/** (library layer) — return `(Status, str)` tuples using the unified `Status` enum (`providers/base.py`). No `print()`, no `sys.exit()`. Exceptions either propagate (e.g. `DockerNotFoundError`) or are caught and returned as status.
+- **config.py, container.py, providers/** (library layer) — return `(Status, str)` tuples using the unified `Status` enum (`providers/base.py`). No `sys.exit()`. No `print()` except two streaming methods that can't batch-return progress: `openai._login_browser()` and `ollama.pull_model()`. Exceptions either propagate (e.g. `DockerNotFoundError`) or are caught and returned as status.
 - **cli.py** (CLI boundary) — owns all user-facing output (`print()`), interactive prompting (`input()`), and process exit (`sys.exit()`). Translates `Status` returns to icons and messages. Catches `DockerNotFoundError` at the top level.
 - **litellm.sh** (shell boundary) — delegates .env parsing to `config.load_env_file()` via Python. Translates exit codes to user messages.
 
@@ -57,7 +57,7 @@ Format contract: skip blank/comment lines, split on first `=`, strip matching qu
 ### Logging Policy
 
 - **Diagnostics** — `logging` module. Logger names: `litellm-proxy` (proxy.py), `litellm-cli.<module>` (everything else). Use `%s` formatting, never f-strings. Levels: DEBUG for tracing, INFO for lifecycle, WARNING for degraded, ERROR for failures.
-- **User output** — `print()` in `cli.py` only. Providers return structured data; CLI formats it.
+- **User output** — `print()` in `cli.py` only, except `openai._login_browser()` and `ollama.pull_model()` which stream progress that can't be batch-returned. Providers otherwise return structured data; CLI formats it.
 - **Exception**: `_print_counters()` atexit handler in proxy.py uses `print` (logging may be torn down).
 
 Key files:
@@ -116,7 +116,7 @@ Registered in `providers/__init__.py` via `_register()` — order matters for di
 
 1. Create `providers/yourprovider.py` inheriting from `BaseProvider`
 2. Implement `validate()` and `login()`, define `auth_types`, `env_vars`, `models`, `login_prompts`
-3. `login()` must accept `credentials` dict and never call `input()` or `print()`
+3. `login()` must accept `credentials` dict and never call `input()`. Avoid `print()` — return `(Status, str)` and let the CLI format output. Exception: streaming progress (OAuth polling, download bars) that can't be batch-returned
 4. For dynamic catalogs, implement `discover_models()` — return `None` on error, `{}` on empty (see Ollama)
 5. Register in `providers/__init__.py`
 

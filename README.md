@@ -21,27 +21,26 @@ Claude Code → localhost:2555 → LiteLLM Proxy (Docker) → LLM Provider
 git clone https://github.com/jaaacki/litellm-claude.git
 cd litellm-claude
 
-# 2. Add a provider and model
-./litellm.sh add
+# 2. Login to a provider
+./litellm.sh provider login openai
 
-# 3. Start the proxy
-./litellm.sh up
+# 3. Add a model
+./litellm.sh model add
 
-# 4. Create a shell alias for Claude Code
-./setup-alias.sh
-source ~/.zshrc   # or ~/.bashrc
+# 4. Start the proxy
+./litellm.sh start
 
-# 5. Use it
-claude-gpt-5.4    # or whatever alias you chose
+# 5. Launch Claude Code
+./litellm.sh launch claude
 ```
 
 ## CLI Reference
 
-### Lifecycle
+### Infrastructure
 
 ```bash
-./litellm.sh up              # Start proxy container (port 2555)
-./litellm.sh down            # Stop and remove container
+./litellm.sh start           # Start proxy container (port 2555)
+./litellm.sh stop            # Stop and remove container
 ./litellm.sh restart         # Restart container
 ./litellm.sh status          # Container + per-model auth status
 ./litellm.sh logs            # Stream container logs
@@ -50,25 +49,31 @@ claude-gpt-5.4    # or whatever alias you chose
 ### Models
 
 ```bash
-./litellm.sh add             # Interactive wizard — pick provider, then models
-./litellm.sh remove          # Remove configured models
-./litellm.sh models          # List configured models
+./litellm.sh model add       # Add models (interactive, pick provider first)
+./litellm.sh model rm        # Remove configured models
+./litellm.sh model list      # List configured models
 ```
 
-### Auth
+### Providers
 
 ```bash
-./litellm.sh login           # Show auth status for all providers
-./litellm.sh login openai    # Authenticate with OpenAI
-./litellm.sh login alibaba   # Authenticate with DashScope
-./litellm.sh login ollama    # Check Ollama + cloud login + list models + pull
+./litellm.sh provider list   # Show available providers
+./litellm.sh provider status # Show auth status for all providers
+./litellm.sh provider login  # Authenticate with a provider
+./litellm.sh provider logout # Remove provider credentials
 ```
 
-### Claude Code
+### Launch
 
 ```bash
-./litellm.sh claude          # Launch Claude Code through the proxy
-./setup-alias.sh             # Create a persistent shell alias
+./litellm.sh launch claude   # Launch Claude Code through the proxy
+```
+
+Flags skip interactive prompts:
+
+```bash
+./litellm.sh launch claude --provider openai --model gpt-5.4
+./litellm.sh model list --provider ollama
 ```
 
 ## Provider Setup
@@ -76,8 +81,8 @@ claude-gpt-5.4    # or whatever alias you chose
 ### OpenAI
 
 ```bash
-./litellm.sh login openai
-# Choose: [1] Browser Login  [2] API Key
+./litellm.sh provider login openai
+# Choose: [1] Browser OAuth  [2] API Key
 ```
 
 Browser login opens the OpenAI OAuth flow. API key is stored in `.env`.
@@ -85,7 +90,7 @@ Browser login opens the OpenAI OAuth flow. API key is stored in `.env`.
 ### Alibaba (DashScope)
 
 ```bash
-./litellm.sh login alibaba
+./litellm.sh provider login alibaba
 # Enter your DashScope API key
 ```
 
@@ -98,12 +103,12 @@ Ollama runs locally — no API keys needed for local models.
 ollama serve
 
 # Login for cloud models (optional)
-./litellm.sh login ollama
+./litellm.sh provider login ollama
 # → Offers: ollama login, list models, pull models
 
 # Or add models directly
-./litellm.sh add
-# → Pick Ollama → choose from discovered models or enter name manually
+./litellm.sh model add --provider ollama
+# → Choose from discovered models or enter name manually
 ```
 
 Cloud models (e.g. `glm-5:cloud`, `kimi-k2.5:cloud`) appear automatically after `ollama login`.
@@ -119,7 +124,6 @@ config.py           Reads/writes litellm_config.yaml and .env
 container.py        Docker container lifecycle
 proxy.py            Local reverse proxy (port 2555 → container :4000)
 providers/          Provider registry (OpenAI, Alibaba, Ollama)
-setup-alias.sh      Creates shell functions for Claude Code aliases
 ```
 
 ### Files managed by the CLI

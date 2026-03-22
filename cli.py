@@ -47,30 +47,33 @@ def show_help():
     print("  --verbose, -v     Enable debug logging")
 
 
+SUBCOMMAND_REGISTRY = {
+    "model": {
+        "add":  (None, "add [--provider X]", "Add models (interactive)"),
+        "rm":   (None, "rm [--provider X]", "Remove a configured model"),
+        "list": (None, "list [--provider X]", "List configured models"),
+    },
+    "provider": {
+        "list":   (None, "list", "Show available providers"),
+        "status": (None, "status", "Show auth status per provider"),
+        "login":  (None, "login [name]", "Authenticate with a provider"),
+        "logout": (None, "logout [name]", "Remove provider credentials"),
+    },
+    "launch": {
+        "claude": (None, "claude [--provider X] [--model Y] [-- args...]", "Launch Claude Code through the proxy"),
+    },
+}
+
+
 def _show_group_help(group):
     """Print subcommand help for a command group."""
     name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./litellm.sh")
-    usage = {
-        "model": [
-            ("add [--provider X]", "Add models (interactive)"),
-            ("rm [--provider X]", "Remove a configured model"),
-            ("list [--provider X]", "List configured models"),
-        ],
-        "provider": [
-            ("list", "Show available providers"),
-            ("status", "Show auth status per provider"),
-            ("login [name]", "Authenticate with a provider"),
-            ("logout [name]", "Remove provider credentials"),
-        ],
-        "launch": [
-            ("claude [--provider X] [--model Y] [-- args...]", "Launch Claude Code through the proxy"),
-        ],
-    }
-    if group not in usage:
+    entries = SUBCOMMAND_REGISTRY.get(group)
+    if not entries:
         return
     print(f"Usage: {name} {group} <subcommand>\n")
-    for sub, desc in usage[group]:
-        print(f"  {name} {group} {sub:<40} {desc}")
+    for _sub, (_handler, usage_str, desc) in entries.items():
+        print(f"  {name} {group} {usage_str:<40} {desc}")
 
 
 def cmd_status():
@@ -714,6 +717,20 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None):
 
 # --- Router ---
 
+def _init_registry():
+    """Populate SUBCOMMAND_REGISTRY with handler references (called after all functions are defined)."""
+    handlers = {
+        "model": {"add": cmd_model_add, "rm": cmd_model_rm, "list": cmd_model_list},
+        "provider": {"list": cmd_provider_list, "status": cmd_provider_status,
+                     "login": cmd_provider_login, "logout": cmd_provider_logout},
+        "launch": {"claude": cmd_launch_claude},
+    }
+    for group, subs in handlers.items():
+        for sub, handler in subs.items():
+            entry = SUBCOMMAND_REGISTRY[group][sub]
+            SUBCOMMAND_REGISTRY[group][sub] = (handler, entry[1], entry[2])
+
+
 def _parse_flags(args):
     """Extract --provider and --model flags from args. Returns (provider, model, remaining_args)."""
     provider = None
@@ -784,26 +801,33 @@ def main():
         container.logs()
 
     # --- Subcommand groups ---
-    elif cmd in ("model", "provider", "launch"):
-        if not rest:
+    elif cmd in SUBCOMMAND_REGISTRY:
+        # Help for the group itself
+        if not rest or rest[0] in ("-h", "--help", "help"):
             _show_group_help(cmd)
-            sys.exit(1)
+            return
+
         sub = rest[0]
+
+        # Help at the subcommand level
+        if "--help" in rest[1:] or "-h" in rest[1:]:
+            _show_group_help(cmd)
+            return
+
         sub_rest = rest[1:]
         provider_flag, model_flag, remaining = _parse_flags(sub_rest)
 
-        dispatch = {
-            "model": {"add": cmd_model_add, "rm": cmd_model_rm, "list": cmd_model_list},
-            "provider": {"list": cmd_provider_list, "status": cmd_provider_status,
-                         "login": cmd_provider_login, "logout": cmd_provider_logout},
-            "launch": {"claude": cmd_launch_claude},
-        }
-        handler = dispatch.get(cmd, {}).get(sub)
-        if not handler:
+        entry = SUBCOMMAND_REGISTRY.get(cmd, {}).get(sub)
+        if not entry or entry[0] is None:
+            # Also catch --help/help passed as subcommand name
+            if sub in ("-h", "--help", "help"):
+                _show_group_help(cmd)
+                return
             print(f"  Unknown subcommand: {cmd} {sub}")
             _show_group_help(cmd)
             sys.exit(1)
 
+        handler = entry[0]
         handler(provider_flag=provider_flag, model_flag=model_flag, extra_args=remaining)
 
     else:
@@ -813,11 +837,15 @@ def main():
 
 
 if __name__ == "__main__":
+    _init_registry()
     try:
         main()
     except KeyboardInterrupt:
         print("\n  Cancelled.")
         sys.exit(130)
+    except EOFError:
+        print("\n  Cancelled (not interactive).")
+        sys.exit(1)
     except DockerNotFoundError as e:
         print(f"  \u2717 {e}")
         sys.exit(1)
