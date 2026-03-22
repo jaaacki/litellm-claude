@@ -34,13 +34,22 @@ class AlibabaProvider(BaseProvider):
         except requests.RequestException as e:
             return Status.UNREACHABLE, f"Cannot reach DashScope API: {e}"
 
-    def login(self, auth_type="api_key"):
-        print(f"\n  Enter your DashScope API key.")
-        print(f"  Get one at: https://dashscope.console.aliyun.com/\n")
-        key = input("  DASHSCOPE_API_KEY: ").strip()
+    # Credentials prompt shown by CLI layer, not here
+    login_prompts = {
+        "api_key": {
+            "instructions": "Enter your DashScope API key.\n  Get one at: https://dashscope.console.aliyun.com/",
+            "fields": [("DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY: ")],
+        }
+    }
+
+    def login(self, auth_type="api_key", credentials=None):
+        """Authenticate. If credentials dict provided, use it. Otherwise prompt."""
+        if credentials is None:
+            # Fallback for direct calls — prompt here
+            key = input("  DASHSCOPE_API_KEY: ").strip()
+        else:
+            key = credentials.get("DASHSCOPE_API_KEY", "")
         if not key:
             return Status.INVALID, "No key entered."
         config.set_env("DASHSCOPE_API_KEY", key)
-        # Validate the key
-        status, msg = self.validate()
-        return status, msg
+        return self.validate()

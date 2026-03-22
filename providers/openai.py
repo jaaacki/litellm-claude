@@ -100,8 +100,8 @@ class OpenAIProvider(BaseProvider):
         1. Container logs for auth-success patterns (primary)
         2. Proxy GET /v1/models to see if chatgpt/ models are served (no billing)
         """
-        running, _ = container.status()
-        if not running:
+        cs, _ = container.status()
+        if cs != Status.OK:
             return Status.NOT_CONFIGURED, "Container not running — cannot check browser auth"
 
         # Primary check: look for auth-success patterns in container logs (free)
@@ -165,20 +165,28 @@ class OpenAIProvider(BaseProvider):
             log.debug("Proxy /v1/models JSON parse failed: %s", e)
             return False, f"invalid JSON: {e}"
 
-    def login(self, auth_type="browser_oauth"):
+    def login(self, auth_type="browser_oauth", credentials=None):
         if auth_type == "api_key":
-            return self._login_api_key()
+            return self._login_api_key(credentials)
         return self._login_browser()
 
-    def _login_api_key(self):
-        print(f"\n  Enter your OpenAI API key.")
-        print(f"  Get one at: https://platform.openai.com/api-keys\n")
-        key = input("  OPENAI_API_KEY: ").strip()
+    # Credentials prompt shown by CLI layer, not here
+    login_prompts = {
+        "api_key": {
+            "instructions": "Enter your OpenAI API key.\n  Get one at: https://platform.openai.com/api-keys",
+            "fields": [("OPENAI_API_KEY", "OPENAI_API_KEY: ")],
+        }
+    }
+
+    def _login_api_key(self, credentials=None):
+        if credentials is None:
+            key = input("  OPENAI_API_KEY: ").strip()
+        else:
+            key = credentials.get("OPENAI_API_KEY", "")
         if not key:
             return Status.INVALID, "No key entered."
         config.set_env("OPENAI_API_KEY", key)
-        status, msg = self.validate()
-        return status, msg
+        return self.validate()
 
     def _login_browser(self):
         """Drive the browser OAuth flow by reading container logs."""
@@ -188,12 +196,13 @@ class OpenAIProvider(BaseProvider):
             return Status.OK, f"Already authenticated. {msg}"
 
         # Ensure container is running
-        running, _ = container.status()
-        if not running:
-            print("  Container not running. Starting it...")
-            container.up()
+        cs, _ = container.status()
+        if cs != Status.OK:
+            s, msg = container.up()
+            if s != Status.OK:
+                return Status.UNREACHABLE, f"Container failed to start: {msg}"
             if not container.wait_healthy(30):
-                return Status.UNREACHABLE, "Container failed to start."
+                return Status.UNREACHABLE, "Container not healthy after startup."
 
         # Capture timestamp before looking for URL
         since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

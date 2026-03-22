@@ -68,51 +68,26 @@ class OllamaProvider(BaseProvider):
             log.warning("Ollama validate failed: %s", e)
             return Status.UNREACHABLE, f"Cannot reach Ollama at {host}: {e}"
 
-    def login(self, auth_type=None):
-        status, msg = self.validate()
-        if status != Status.OK:
-            return status, msg
+    def login(self, auth_type=None, credentials=None):
+        """Validate Ollama connectivity. Returns (Status, msg).
 
-        print(f"  ✓ {msg}")
+        Interactive flows (cloud login, model pull) are driven by the CLI layer
+        via ollama_cloud_login() and pull_model().
+        """
+        return self.validate()
 
-        # Offer ollama login for cloud model access
+    def ollama_cloud_login(self):
+        """Attempt ollama.com cloud login. Returns (Status, msg)."""
         ollama_bin = shutil.which("ollama")
         if not ollama_bin:
-            print("  ⚠ ollama CLI not found — install it to login for cloud models")
-        else:
-            choice = input("\n  Login to ollama.com for cloud models? [y/N]: ").strip()
-            if choice.lower() == "y":
-                print()
-                try:
-                    result = subprocess.run([ollama_bin, "login"], timeout=120)
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    return Status.UNREACHABLE, f"ollama login failed: {e}"
-                if result.returncode != 0:
-                    return Status.UNREACHABLE, "ollama login failed"
-                print("  ✓ Logged in to ollama.com")
-
-        # Show available models
-        models = self.discover_models()
-        if models is None:
-            print("\n  Warning: Could not discover models (check Ollama status).")
-        elif models:
-            print(f"\n  Available models ({len(models)}):\n")
-            for alias in models:
-                print(f"    • {alias}")
-        else:
-            print("\n  No models found. Pull one: ollama pull <model>")
-
-        # Offer to pull
-        pull = input("\n  Pull a model? Enter name (or Enter to skip): ").strip()
-        if pull:
-            print()
-            ok, pull_msg = self.pull_model(pull)
-            if ok:
-                print(f"  ✓ {pull_msg}")
-            else:
-                print(f"  ✗ {pull_msg}")
-
-        return Status.OK, "Ollama ready"
+            return Status.NOT_CONFIGURED, "ollama CLI not found — install it to login for cloud models"
+        try:
+            result = subprocess.run([ollama_bin, "login"], timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return Status.UNREACHABLE, f"ollama login failed: {e}"
+        if result.returncode != 0:
+            return Status.UNREACHABLE, "ollama login failed"
+        return Status.OK, "Logged in to ollama.com"
 
     def discover_models(self):
         """Fetch available models from Ollama.

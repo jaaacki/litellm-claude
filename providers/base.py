@@ -45,14 +45,22 @@ class BaseProvider(ABC):
             self.models = dict(self.__class__.models) if hasattr(self.__class__, 'models') else {}
             self._init_done = True
 
+    # Override in subclass: {auth_type: {"instructions": str, "fields": [(env_var, prompt)]}}
+    # CLI layer reads this to prompt the user, then passes credentials to login().
+    login_prompts: dict = {}
+
     @abstractmethod
     def validate(self) -> tuple:
         """Returns (Status, message_string)."""
         pass
 
     @abstractmethod
-    def login(self, auth_type=None) -> tuple:
-        """Returns (Status, message_string)."""
+    def login(self, auth_type=None, credentials=None) -> tuple:
+        """Returns (Status, message_string).
+
+        credentials: dict of {env_var: value} collected by the CLI layer
+        using login_prompts. If None, provider may prompt directly (fallback).
+        """
         pass
 
     def get_model_string(self, alias, auth_type=None):

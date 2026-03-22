@@ -50,8 +50,8 @@ def cmd_status():
     import config
     import providers
 
-    running, output = container.status()
-    state = "running" if running else "stopped"
+    cs, output = container.status()
+    state = "running" if cs == Status.OK else "stopped"
     print(f"Container:  litellm-proxy  [{state}]")
     print(f"Port:       localhost:{PORT}")
     print()
@@ -131,6 +131,8 @@ def cmd_login(provider_name=None):
         ls, msg = provider.login()
         icon = "✓" if ls == Status.OK else "?" if ls == Status.UNVERIFIED else "✗"
         print(f"  {icon} {msg}")
+        if provider.name == "ollama" and ls == Status.OK:
+            _ollama_interactive_login(provider)
         return
 
     if status == Status.OK:
@@ -138,7 +140,8 @@ def cmd_login(provider_name=None):
         return
 
     auth_type = _choose_auth_type(provider)
-    result = _print_login_result(*provider.login(auth_type))
+    credentials = _prompt_credentials(provider, auth_type)
+    result = _print_login_result(*provider.login(auth_type, credentials=credentials))
     if result not in (Status.OK, Status.UNVERIFIED):
         sys.exit(1)
 
@@ -149,6 +152,48 @@ def _print_restart_failure():
     print(f"  ✗ Container failed to start. Check './litellm.sh logs' for details.")
     if os.path.exists(config.CONFIG_BACKUP):
         print(f"    Your previous config was backed up to litellm_config.yaml.bak")
+
+
+def _prompt_credentials(provider, auth_type):
+    """Prompt user for credentials based on provider.login_prompts. Returns dict."""
+    prompts = getattr(provider, "login_prompts", {}).get(auth_type)
+    if not prompts:
+        return None
+    print(f"\n  {prompts['instructions']}\n")
+    credentials = {}
+    for env_var, prompt_text in prompts["fields"]:
+        credentials[env_var] = input(f"  {prompt_text}").strip()
+    return credentials
+
+
+def _ollama_interactive_login(provider):
+    """Drive the interactive Ollama login flow (cloud login, model discovery, pull)."""
+    # Offer cloud login
+    choice = input("\n  Login to ollama.com for cloud models? [y/N]: ").strip()
+    if choice.lower() == "y":
+        print()
+        s, msg = provider.ollama_cloud_login()
+        icon = "✓" if s == Status.OK else "✗"
+        print(f"  {icon} {msg}")
+
+    # Show available models
+    models = provider.discover_models()
+    if models is None:
+        print("\n  Warning: Could not discover models (check Ollama status).")
+    elif models:
+        print(f"\n  Available models ({len(models)}):\n")
+        for alias in models:
+            print(f"    - {alias}")
+    else:
+        print("\n  No models found. Pull one: ollama pull <model>")
+
+    # Offer to pull
+    pull = input("\n  Pull a model? Enter name (or Enter to skip): ").strip()
+    if pull:
+        print()
+        ok, pull_msg = provider.pull_model(pull)
+        icon = "✓" if ok else "✗"
+        print(f"  {icon} {pull_msg}")
 
 
 def _choose_auth_type(provider):
@@ -187,7 +232,8 @@ def _ensure_authenticated(provider, auth_type):
     if status == Status.OK:
         return
     print(f"\n  Need to authenticate with {provider.display_name}.")
-    result = _print_login_result(*provider.login(auth_type))
+    credentials = _prompt_credentials(provider, auth_type)
+    result = _print_login_result(*provider.login(auth_type, credentials=credentials))
     if result == Status.UNVERIFIED:
         print(f"  Aborting \u2014 cannot add models with unverified auth.")
         sys.exit(1)
@@ -589,12 +635,15 @@ def cmd_claude(extra_args):
         sys.exit(1)
 
     # Ensure proxy is running
-    running, _ = container.status()
-    if not running:
+    cs, _ = container.status()
+    if cs != Status.OK:
         print("  Starting proxy...")
         s, msg = container.up()
-        if s != Status.OK or not container.wait_healthy():
+        if s != Status.OK:
             print(f"  ✗ {msg}")
+            sys.exit(1)
+        if not container.wait_healthy():
+            print("  ✗ Container not healthy after startup")
             sys.exit(1)
 
     # Route through the LiteLLM proxy using the master key for auth

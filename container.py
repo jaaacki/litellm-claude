@@ -270,8 +270,7 @@ def up():
     proxy_ok = _start_proxy()
     if proxy_ok:
         return Status.OK, f"Service started on http://localhost:{PROXY_PORT}"
-    return Status.OK, (f"Container running but reverse proxy on port {PROXY_PORT} "
-                        f"failed to start")
+    return Status.FAILED, f"Container running but reverse proxy on port {PROXY_PORT} failed to start"
 
 
 def down():
@@ -294,18 +293,21 @@ def restart():
     proxy_ok = _start_proxy()
     if proxy_ok:
         return Status.OK, "Container restarted"
-    return Status.OK, f"Container restarted but reverse proxy on port {PROXY_PORT} failed to start"
+    return Status.FAILED, f"Container restarted but reverse proxy on port {PROXY_PORT} failed to start"
 
 
 def status():
-    """Return (is_running: bool, output: str)."""
+    """Return (Status, output: str). OK if container is running."""
     _check_docker()
     ok, output = _run(["ps"], capture=True)
     is_running = "Up" in output or "running" in output.lower()
-    return is_running, output
+    if is_running:
+        return Status.OK, output
+    return Status.FAILED, output
 
 
 def logs(follow=True):
+    """Stream container logs. No return value (output goes to terminal)."""
     _check_docker()
     args = ["logs"]
     if follow:

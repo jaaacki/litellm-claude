@@ -249,14 +249,15 @@ FUNC_BLOCK=$(cat <<FUNCEOF
 # Claude Code via LiteLLM Proxy (${MODEL})
 # Note: master key is read from .env at runtime (not embedded in profile)
 ${ALIAS_NAME}() {
-  local _mk _env="${ENV_PATH}"
-  if [ ! -r "\$_env" ]; then
-    echo "Error: Cannot read \$_env — refusing to use default credentials. Fix .env permissions." >&2
-    return 1
-  fi
-  _mk=\$(grep "^LITELLM_MASTER_KEY=" "\$_env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+  local _mk
+  _mk=\$("${VENV}/bin/python" -c "
+import sys; sys.path.insert(0, '${DIR}')
+from config import load_env_file
+v = load_env_file('${ENV_PATH}').get('LITELLM_MASTER_KEY', '')
+print(v)
+" 2>&1)
   if [ -z "\$_mk" ]; then
-    echo "Error: LITELLM_MASTER_KEY not found in \$_env — set it with ./litellm.sh or add it manually." >&2
+    echo "Error: LITELLM_MASTER_KEY not found in ${ENV_PATH} — set it with ./litellm.sh or add it manually." >&2
     return 1
   fi
   ANTHROPIC_BASE_URL="http://localhost:${PORT}" \\
