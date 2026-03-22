@@ -3,8 +3,8 @@ import logging
 import sys
 import os
 
-from container import PROXY_PORT as PORT
-from providers.base import AuthStatus
+from container import PROXY_PORT as PORT, DockerNotFoundError
+from providers.base import Status
 
 log = logging.getLogger("litellm-cli")
 
@@ -70,16 +70,16 @@ def cmd_status():
             if m["provider"] not in auth_cache:
                 auth_cache[m["provider"]] = provider.validate()
             auth_status, _ = auth_cache[m["provider"]]
-            if auth_status == AuthStatus.OK:
+            if auth_status == Status.OK:
                 icon = "✓"
                 label = "authenticated" if m["provider"] != "ollama" else "reachable"
-            elif auth_status == AuthStatus.UNVERIFIED:
+            elif auth_status == Status.UNVERIFIED:
                 icon = "?"
                 label = "unverified"
-            elif auth_status == AuthStatus.NOT_CONFIGURED:
+            elif auth_status == Status.NOT_CONFIGURED:
                 icon = "✗"
                 label = "not configured"
-            elif auth_status == AuthStatus.UNREACHABLE:
+            elif auth_status == Status.UNREACHABLE:
                 icon = "✗"
                 label = "unreachable"
             else:
@@ -109,9 +109,9 @@ def cmd_login(provider_name=None):
         print("Provider auth status:\n")
         for p in providers.all_providers():
             status, msg = p.validate()
-            if status == AuthStatus.OK:
+            if status == Status.OK:
                 print(f"  {p.display_name:<20} ✓ {msg}")
-            elif status == AuthStatus.UNVERIFIED:
+            elif status == Status.UNVERIFIED:
                 print(f"  {p.display_name:<20} ? {msg}")
             else:
                 print(f"  {p.display_name:<20} ✗ {msg}")
@@ -129,17 +129,17 @@ def cmd_login(provider_name=None):
     if len(provider.auth_types) == 0:
         # Provider manages its own auth (e.g. Ollama)
         ls, msg = provider.login()
-        icon = "✓" if ls == AuthStatus.OK else "?" if ls == AuthStatus.UNVERIFIED else "✗"
+        icon = "✓" if ls == Status.OK else "?" if ls == Status.UNVERIFIED else "✗"
         print(f"  {icon} {msg}")
         return
 
-    if status == AuthStatus.OK:
+    if status == Status.OK:
         print(f"  ✓ Already authenticated with {provider.display_name}. {msg}")
         return
 
     auth_type = _choose_auth_type(provider)
     result = _print_login_result(*provider.login(auth_type))
-    if result not in (AuthStatus.OK, AuthStatus.UNVERIFIED):
+    if result not in (Status.OK, Status.UNVERIFIED):
         sys.exit(1)
 
 
@@ -172,9 +172,9 @@ def _choose_auth_type(provider):
 
 def _print_login_result(login_status, msg):
     """Print login result with status icon. Returns the status for caller control flow."""
-    if login_status == AuthStatus.OK:
+    if login_status == Status.OK:
         print(f"\n  \u2713 {msg}")
-    elif login_status == AuthStatus.UNVERIFIED:
+    elif login_status == Status.UNVERIFIED:
         print(f"\n  ? {msg}")
     else:
         print(f"\n  \u2717 {msg}")
@@ -184,14 +184,14 @@ def _print_login_result(login_status, msg):
 def _ensure_authenticated(provider, auth_type):
     """Check auth and login if needed. Exits on failure."""
     status, msg = provider.validate()
-    if status == AuthStatus.OK:
+    if status == Status.OK:
         return
     print(f"\n  Need to authenticate with {provider.display_name}.")
     result = _print_login_result(*provider.login(auth_type))
-    if result == AuthStatus.UNVERIFIED:
+    if result == Status.UNVERIFIED:
         print(f"  Aborting \u2014 cannot add models with unverified auth.")
         sys.exit(1)
-    elif result != AuthStatus.OK:
+    elif result != Status.OK:
         sys.exit(1)
 
 
@@ -207,7 +207,8 @@ def _restart_and_report(context_msg, provider=None, added=None):
 
     print(f"\n  Restarting container...")
     log.debug("Restarting after %s", context_msg)
-    if not container.restart():
+    s, msg = container.restart()
+    if s != Status.OK:
         _print_restart_failure()
         sys.exit(1)
     if not container.wait_healthy():
@@ -216,14 +217,14 @@ def _restart_and_report(context_msg, provider=None, added=None):
 
     if provider and added:
         status, msg = provider.validate()
-        if status == AuthStatus.OK:
+        if status == Status.OK:
             print(f"  Container is running. Added: {', '.join(added)}. {msg}")
         else:
             print(f"  Container is running. Added: {', '.join(added)}")
             print(f"    Auth check: {msg}")
     elif provider:
         status, msg = provider.validate()
-        if status == AuthStatus.OK:
+        if status == Status.OK:
             print(f"  Container is running. {msg}")
         else:
             print(f"  Container is running.")
@@ -267,7 +268,7 @@ def _add_provider_first():
     if provider.name == "ollama":
         # --- Ollama: must be running locally ---
         status, msg = provider.validate()
-        if status != AuthStatus.OK:
+        if status != Status.OK:
             print(f"\n  ✗ {msg}")
             sys.exit(1)
         catalog = provider.discover_models()
@@ -356,8 +357,8 @@ def _add_provider_first():
         if provider.name == "ollama":
             extra = provider.get_extra_params()
 
-        ok, msg = config.add_model(final_alias, model_str, extra)
-        if ok:
+        s, msg = config.add_model(final_alias, model_str, extra)
+        if s == Status.OK:
             added.append(final_alias)
             existing_aliases.append(final_alias)
             print(f"  ✓ {msg}")
@@ -429,7 +430,7 @@ def _add_model_first():
     if choice.lower() == "o" and ollama_provider:
         # Manual Ollama model input
         status, msg = ollama_provider.validate()
-        if status != AuthStatus.OK:
+        if status != Status.OK:
             print(f"\n  ✗ {msg}")
             sys.exit(1)
 
@@ -470,7 +471,7 @@ def _add_model_first():
 
         if provider.auth_types:
             status, msg = provider.validate()
-            if status != AuthStatus.OK:
+            if status != Status.OK:
                 auth_type = _choose_auth_type(provider)
                 _ensure_authenticated(provider, auth_type)
             else:
@@ -499,8 +500,8 @@ def _add_model_first():
     if provider.name == "ollama":
         extra = provider.get_extra_params()
 
-    ok, msg = config.add_model(final_alias, model_str, extra)
-    if not ok:
+    s, msg = config.add_model(final_alias, model_str, extra)
+    if s != Status.OK:
         print(f"  ✗ {msg}")
         sys.exit(1)
     print(f"  ✓ {msg}")
@@ -546,8 +547,8 @@ def cmd_remove():
     removed_providers = set()
     for model in selected:
         provider_name = model["provider"]
-        ok, msg = config.remove_model(model["alias"])
-        if ok:
+        s, msg = config.remove_model(model["alias"])
+        if s == Status.OK:
             print(f"  ✓ {msg}")
             if provider_name:
                 removed_providers.add(provider_name)
@@ -591,9 +592,9 @@ def cmd_claude(extra_args):
     running, _ = container.status()
     if not running:
         print("  Starting proxy...")
-        container.up()
-        if not container.wait_healthy():
-            print("  ✗ Proxy failed to start.")
+        s, msg = container.up()
+        if s != Status.OK or not container.wait_healthy():
+            print(f"  ✗ {msg}")
             sys.exit(1)
 
     # Route through the LiteLLM proxy using the master key for auth
@@ -641,15 +642,21 @@ def main():
 
     if cmd == "up":
         import container
-        if not container.up():
+        s, msg = container.up()
+        print(f"  {'✓' if s == Status.OK else '✗'} {msg}")
+        if s != Status.OK:
             sys.exit(1)
     elif cmd == "down":
         import container
-        if not container.down():
+        s, msg = container.down()
+        if s != Status.OK:
+            print(f"  ✗ {msg}")
             sys.exit(1)
     elif cmd == "restart":
         import container
-        if not container.restart():
+        s, msg = container.restart()
+        if s != Status.OK:
+            print(f"  ✗ {msg}")
             sys.exit(1)
     elif cmd == "status":
         cmd_status()
@@ -679,3 +686,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n  Cancelled.")
         sys.exit(130)
+    except DockerNotFoundError as e:
+        print(f"  ✗ {e}")
+        sys.exit(1)

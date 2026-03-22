@@ -99,7 +99,7 @@ def _validate_messages(body_bytes):
     """Validate /v1/messages request schema. Returns error string or None."""
     try:
         data = json.loads(body_bytes)
-    except Exception:
+    except (ValueError, TypeError):
         return "Request body must be valid JSON"
     if not isinstance(data, dict):
         return "Request body must be a JSON object"
@@ -122,7 +122,7 @@ def strip_system(body_bytes):
     """
     try:
         data = json.loads(body_bytes)
-    except Exception:
+    except (ValueError, TypeError):
         return body_bytes
 
     if not isinstance(data, dict):

@@ -8,7 +8,7 @@ import requests
 import config
 import container
 from container import PROXY_PORT
-from providers.base import BaseProvider, AuthStatus
+from providers.base import BaseProvider, Status
 
 log = logging.getLogger("litellm-cli.openai")
 
@@ -73,25 +73,25 @@ class OpenAIProvider(BaseProvider):
                 timeout=10,
             )
             if resp.status_code == 401:
-                return AuthStatus.INVALID, "Invalid OPENAI_API_KEY"
+                return Status.INVALID, "Invalid OPENAI_API_KEY"
             if resp.status_code == 403:
-                return AuthStatus.INVALID, "OPENAI_API_KEY lacks required permissions (403 Forbidden)"
+                return Status.INVALID, "OPENAI_API_KEY lacks required permissions (403 Forbidden)"
             if resp.status_code == 429:
-                return AuthStatus.UNREACHABLE, "Rate limited (HTTP 429) — credential not verified"
+                return Status.UNREACHABLE, "Rate limited (HTTP 429) — credential not verified"
             if resp.status_code >= 500:
-                return AuthStatus.UNREACHABLE, f"OpenAI server error (HTTP {resp.status_code}) — key not validated"
+                return Status.UNREACHABLE, f"OpenAI server error (HTTP {resp.status_code}) — key not validated"
             if resp.status_code != 200:
-                return AuthStatus.UNREACHABLE, f"OpenAI returned unexpected status {resp.status_code} — key not validated"
+                return Status.UNREACHABLE, f"OpenAI returned unexpected status {resp.status_code} — key not validated"
             ct = resp.headers.get("Content-Type", "")
             if "application/json" not in ct:
-                return AuthStatus.UNREACHABLE, f"OpenAI returned unexpected content-type: {ct}"
+                return Status.UNREACHABLE, f"OpenAI returned unexpected content-type: {ct}"
             try:
                 resp.json()
             except ValueError:
-                return AuthStatus.UNREACHABLE, "OpenAI returned invalid JSON"
-            return AuthStatus.OK, "Authenticated with OpenAI API key"
+                return Status.UNREACHABLE, "OpenAI returned invalid JSON"
+            return Status.OK, "Authenticated with OpenAI API key"
         except requests.RequestException as e:
-            return AuthStatus.UNREACHABLE, f"Cannot reach OpenAI API: {e}"
+            return Status.UNREACHABLE, f"Cannot reach OpenAI API: {e}"
 
     def _validate_browser(self):
         """Check browser OAuth auth without making billing API calls.
@@ -102,13 +102,13 @@ class OpenAIProvider(BaseProvider):
         """
         running, _ = container.status()
         if not running:
-            return AuthStatus.NOT_CONFIGURED, "Container not running — cannot check browser auth"
+            return Status.NOT_CONFIGURED, "Container not running — cannot check browser auth"
 
         # Primary check: look for auth-success patterns in container logs (free)
         logs = container.get_logs_tail(200)
         if self._AUTH_LOG_PATTERN.search(logs):
             log.debug("Browser OAuth auth pattern found in logs")
-            return AuthStatus.UNVERIFIED, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
+            return Status.UNVERIFIED, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
 
         # Secondary check: query the proxy's model list endpoint (no billing)
         chatgpt_aliases = {m["alias"] for m in config.list_models() if m["model"].startswith("chatgpt/")}
@@ -116,13 +116,13 @@ class OpenAIProvider(BaseProvider):
             found, err = self._check_proxy_models(chatgpt_aliases)
             if found:
                 log.debug("Browser OAuth validated — chatgpt models served by proxy")
-                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
+                return Status.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
             if err:
                 log.debug("Proxy model check error: %s", err)
-                return AuthStatus.UNREACHABLE, f"Cannot verify browser auth (proxy check failed: {err})"
+                return Status.UNREACHABLE, f"Cannot verify browser auth (proxy check failed: {err})"
 
         log.debug("No auth evidence found")
-        return AuthStatus.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
+        return Status.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
 
     def _check_proxy_models(self, chatgpt_aliases):
         """Check if chatgpt models are served by the proxy.
@@ -175,7 +175,7 @@ class OpenAIProvider(BaseProvider):
         print(f"  Get one at: https://platform.openai.com/api-keys\n")
         key = input("  OPENAI_API_KEY: ").strip()
         if not key:
-            return AuthStatus.INVALID, "No key entered."
+            return Status.INVALID, "No key entered."
         config.set_env("OPENAI_API_KEY", key)
         status, msg = self.validate()
         return status, msg
@@ -184,8 +184,8 @@ class OpenAIProvider(BaseProvider):
         """Drive the browser OAuth flow by reading container logs."""
         # Pre-check
         status, msg = self.validate()
-        if status == AuthStatus.OK:
-            return AuthStatus.OK, f"Already authenticated. {msg}"
+        if status == Status.OK:
+            return Status.OK, f"Already authenticated. {msg}"
 
         # Ensure container is running
         running, _ = container.status()
@@ -193,7 +193,7 @@ class OpenAIProvider(BaseProvider):
             print("  Container not running. Starting it...")
             container.up()
             if not container.wait_healthy(30):
-                return AuthStatus.UNREACHABLE, "Container failed to start."
+                return Status.UNREACHABLE, "Container failed to start."
 
         # Capture timestamp before looking for URL
         since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -228,7 +228,7 @@ class OpenAIProvider(BaseProvider):
             print(".", end="", flush=True)
 
         if not login_url:
-            return AuthStatus.UNREACHABLE, (
+            return Status.UNREACHABLE, (
                 "Could not find login URL in container logs.\n"
                 "  Make sure you have a chatgpt/ model configured and run './litellm.sh logs' to debug."
             )
@@ -255,7 +255,7 @@ class OpenAIProvider(BaseProvider):
             logs = container.get_logs_since(since)
             if self._AUTH_LOG_PATTERN.search(logs):
                 print("\n  ? Browser OAuth may be active (log pattern detected, not independently verified)")
-                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (log pattern detected, not independently verified)"
+                return Status.UNVERIFIED, "Browser OAuth may be active (log pattern detected, not independently verified)"
 
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
@@ -263,7 +263,7 @@ class OpenAIProvider(BaseProvider):
                 found, err = self._check_proxy_models(chatgpt_aliases)
                 if found:
                     print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
-                    return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"
+                    return Status.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"
                 if err:
                     log.debug("Proxy model check failed during login poll: %s", err)
                     poll_note = f" (proxy: {err})"
@@ -279,4 +279,4 @@ class OpenAIProvider(BaseProvider):
             time.sleep(3)
 
         print()
-        return AuthStatus.UNREACHABLE, "Login timed out after 5 minutes. Run './litellm.sh login openai' to try again."
+        return Status.UNREACHABLE, "Login timed out after 5 minutes. Run './litellm.sh login openai' to try again."

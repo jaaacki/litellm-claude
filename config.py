@@ -5,6 +5,8 @@ import stat
 import tempfile
 import yaml
 
+from providers.base import Status
+
 DIR = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger("litellm-cli.config")
 CONFIG_PATH = os.path.join(DIR, "litellm_config.yaml")
@@ -48,7 +50,7 @@ def _atomic_write(path, content_fn):
         with os.fdopen(fd, "w") as f:
             content_fn(f)
         os.replace(tmp_path, path)
-    except Exception:
+    except Exception:  # Cleanup-then-reraise: remove temp file before propagating
         os.unlink(tmp_path)
         raise
 
@@ -95,15 +97,15 @@ def _provider_from_model(model_str):
 
 
 def add_model(alias, litellm_model, extra_params=None):
-    """Add a model to config. Returns (success, message)."""
+    """Add a model to config. Returns (Status, message)."""
     if not alias or not alias.strip():
-        return False, "Model alias cannot be empty."
+        return Status.INVALID, "Model alias cannot be empty."
     if not litellm_model or not litellm_model.strip():
-        return False, "Model string cannot be empty."
+        return Status.INVALID, "Model string cannot be empty."
     data = _load_yaml()
     for entry in data["model_list"]:
         if entry.get("model_name") == alias:
-            return False, f"Model alias '{alias}' already exists."
+            return Status.INVALID, f"Model alias '{alias}' already exists."
     new_entry = {
         "model_name": alias,
         "litellm_params": {"model": litellm_model},
@@ -112,20 +114,20 @@ def add_model(alias, litellm_model, extra_params=None):
         new_entry["litellm_params"].update(extra_params)
     data["model_list"].append(new_entry)
     _save_yaml(data)
-    return True, f"Added '{alias}' -> {litellm_model}"
+    return Status.OK, f"Added '{alias}' -> {litellm_model}"
 
 
 def remove_model(alias):
-    """Remove a model by alias. Returns (success, message)."""
+    """Remove a model by alias. Returns (Status, message)."""
     data = _load_yaml()
     original_len = len(data["model_list"])
     data["model_list"] = [
         e for e in data["model_list"] if e.get("model_name") != alias
     ]
     if len(data["model_list"]) == original_len:
-        return False, f"Model '{alias}' not found."
+        return Status.NOT_FOUND, f"Model '{alias}' not found."
     _save_yaml(data)
-    return True, f"Removed '{alias}'"
+    return Status.OK, f"Removed '{alias}'"
 
 
 def provider_has_models(provider_name):

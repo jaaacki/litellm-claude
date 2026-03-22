@@ -1,6 +1,6 @@
 import requests
 import config
-from providers.base import BaseProvider, AuthStatus, is_placeholder
+from providers.base import BaseProvider, Status, is_placeholder
 
 
 class AlibabaProvider(BaseProvider):
@@ -19,7 +19,7 @@ class AlibabaProvider(BaseProvider):
     def validate(self):
         api_key = config.get_env("DASHSCOPE_API_KEY")
         if not api_key or is_placeholder(api_key):
-            return AuthStatus.NOT_CONFIGURED, "DASHSCOPE_API_KEY not set"
+            return Status.NOT_CONFIGURED, "DASHSCOPE_API_KEY not set"
         try:
             resp = requests.get(
                 self.API_URL,
@@ -27,19 +27,19 @@ class AlibabaProvider(BaseProvider):
                 timeout=10,
             )
             if resp.status_code == 200:
-                return AuthStatus.OK, "Authenticated with DashScope"
+                return Status.OK, "Authenticated with DashScope"
             if resp.status_code == 401:
-                return AuthStatus.INVALID, "Invalid DASHSCOPE_API_KEY"
-            return AuthStatus.INVALID, f"DashScope returned status {resp.status_code}"
+                return Status.INVALID, "Invalid DASHSCOPE_API_KEY"
+            return Status.INVALID, f"DashScope returned status {resp.status_code}"
         except requests.RequestException as e:
-            return AuthStatus.UNREACHABLE, f"Cannot reach DashScope API: {e}"
+            return Status.UNREACHABLE, f"Cannot reach DashScope API: {e}"
 
     def login(self, auth_type="api_key"):
         print(f"\n  Enter your DashScope API key.")
         print(f"  Get one at: https://dashscope.console.aliyun.com/\n")
         key = input("  DASHSCOPE_API_KEY: ").strip()
         if not key:
-            return AuthStatus.INVALID, "No key entered."
+            return Status.INVALID, "No key entered."
         config.set_env("DASHSCOPE_API_KEY", key)
         # Validate the key
         status, msg = self.validate()

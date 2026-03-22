@@ -16,12 +16,21 @@ def is_placeholder(value):
     )
 
 
-class AuthStatus(Enum):
+class Status(Enum):
+    """Unified result status for all internal Python operations.
+
+    Used by providers, config, and container. Translated at boundaries:
+    - proxy.py translates to HTTP status codes + JSON envelopes
+    - cli.py translates to print output + sys.exit codes
+    - shell scripts translate to exit codes
+    """
     OK = "ok"
-    UNVERIFIED = "unverified"
-    NOT_CONFIGURED = "not_configured"
-    INVALID = "invalid"
-    UNREACHABLE = "unreachable"
+    FAILED = "failed"              # Generic operation failure
+    NOT_FOUND = "not_found"        # Resource/model not found
+    UNVERIFIED = "unverified"      # Cannot confirm, may be ok
+    NOT_CONFIGURED = "not_configured"  # Missing setup/config
+    INVALID = "invalid"            # Bad input or state
+    UNREACHABLE = "unreachable"    # Cannot reach external service
 
 
 class BaseProvider(ABC):
@@ -38,12 +47,12 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def validate(self) -> tuple:
-        """Returns (AuthStatus, message_string)."""
+        """Returns (Status, message_string)."""
         pass
 
     @abstractmethod
     def login(self, auth_type=None) -> tuple:
-        """Returns (AuthStatus, message_string)."""
+        """Returns (Status, message_string)."""
         pass
 
     def get_model_string(self, alias, auth_type=None):

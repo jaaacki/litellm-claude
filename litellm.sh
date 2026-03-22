@@ -51,36 +51,18 @@ if ! _deps_ok; then
     "$VENV/bin/pip" install -q -r "$REQS" || { echo "Error: Failed to install dependencies."; exit 1; }
 fi
 
-# --- Load .env into host environment so providers can read env vars ---
+# --- Load .env into host environment via canonical Python parser ---
+# Uses config.load_env_file() — the single .env parser for this repo.
 
 if [ -f "$DIR/.env" ]; then
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        # Strip leading/trailing whitespace
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        # Skip comments and blank lines
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        # Must contain =
-        [[ "$line" != *=* ]] && continue
-        # Split on first =
-        key="${line%%=*}"
-        value="${line#*=}"
-        # Trim key and value whitespace
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        # Strip matching surrounding quotes
-        if [[ ${#value} -ge 2 ]]; then
-            if [[ "$value" == \"*\" ]]; then
-                value="${value:1:${#value}-2}"
-            elif [[ "$value" == \'*\' ]]; then
-                value="${value:1:${#value}-2}"
-            fi
-        fi
-        [[ -z "$key" ]] && continue
-        export "$key=$value"
-    done < "$DIR/.env"
+    eval "$("$VENV/bin/python" -c "
+import sys, os
+sys.path.insert(0, '$DIR')
+from config import load_env_file
+for k, v in load_env_file('$DIR/.env').items():
+    v = v.replace(\"'\", \"'\\\"'\\\"'\")
+    print(f'export {k}=\\'{v}\\'')
+")" || { echo "Warning: Failed to parse .env file" >&2; }
 fi
 
 # --- Forward to Python CLI ---

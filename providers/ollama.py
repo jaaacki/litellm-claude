@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from urllib.parse import urlparse
 import requests
-from providers.base import BaseProvider, AuthStatus
+from providers.base import BaseProvider, Status
 
 log = logging.getLogger("litellm-cli.ollama")
 
@@ -55,22 +55,22 @@ class OllamaProvider(BaseProvider):
         try:
             resp = requests.get(f"{host}/api/tags", timeout=3)
             if resp.status_code != 200:
-                return AuthStatus.UNREACHABLE, f"Ollama returned status {resp.status_code}"
+                return Status.UNREACHABLE, f"Ollama returned status {resp.status_code}"
             ct = resp.headers.get("Content-Type", "")
             if "json" not in ct:
-                return AuthStatus.UNREACHABLE, f"Ollama returned unexpected Content-Type: {ct}"
+                return Status.UNREACHABLE, f"Ollama returned unexpected Content-Type: {ct}"
             try:
                 resp.json()
             except ValueError:
-                return AuthStatus.UNREACHABLE, "Ollama returned invalid JSON"
-            return AuthStatus.OK, f"Ollama is reachable at {host}"
+                return Status.UNREACHABLE, "Ollama returned invalid JSON"
+            return Status.OK, f"Ollama is reachable at {host}"
         except requests.RequestException as e:
             log.warning("Ollama validate failed: %s", e)
-            return AuthStatus.UNREACHABLE, f"Cannot reach Ollama at {host}: {e}"
+            return Status.UNREACHABLE, f"Cannot reach Ollama at {host}: {e}"
 
     def login(self, auth_type=None):
         status, msg = self.validate()
-        if status != AuthStatus.OK:
+        if status != Status.OK:
             return status, msg
 
         print(f"  ✓ {msg}")
@@ -86,9 +86,9 @@ class OllamaProvider(BaseProvider):
                 try:
                     result = subprocess.run([ollama_bin, "login"], timeout=120)
                 except (OSError, subprocess.TimeoutExpired) as e:
-                    return AuthStatus.UNREACHABLE, f"ollama login failed: {e}"
+                    return Status.UNREACHABLE, f"ollama login failed: {e}"
                 if result.returncode != 0:
-                    return AuthStatus.UNREACHABLE, "ollama login failed"
+                    return Status.UNREACHABLE, "ollama login failed"
                 print("  ✓ Logged in to ollama.com")
 
         # Show available models
@@ -112,7 +112,7 @@ class OllamaProvider(BaseProvider):
             else:
                 print(f"  ✗ {pull_msg}")
 
-        return AuthStatus.OK, "Ollama ready"
+        return Status.OK, "Ollama ready"
 
     def discover_models(self):
         """Fetch available models from Ollama.
