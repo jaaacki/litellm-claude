@@ -78,7 +78,7 @@ class OpenAIProvider(BaseProvider):
             if resp.status_code == 403:
                 return AuthStatus.INVALID, "OPENAI_API_KEY lacks required permissions (403 Forbidden)"
             if resp.status_code == 429:
-                return AuthStatus.OK, "OPENAI_API_KEY accepted (rate limited — key is valid but throttled)"
+                return AuthStatus.UNVERIFIED, "OPENAI_API_KEY may be valid (429 received, but cannot confirm upstream accepted credential)"
             if resp.status_code >= 500:
                 return AuthStatus.UNREACHABLE, f"OpenAI server error (HTTP {resp.status_code}) — key not validated"
             if resp.status_code != 200:
@@ -109,13 +109,13 @@ class OpenAIProvider(BaseProvider):
         logs = container.get_logs_tail(200)
         if self._AUTH_LOG_PATTERN.search(logs):
             log.debug("Browser OAuth auth pattern found in logs")
-            return AuthStatus.OK, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
+            return AuthStatus.UNVERIFIED, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
 
         # Secondary check: query the proxy's model list endpoint (no billing)
         chatgpt_aliases = {m["alias"] for m in config.list_models() if m["model"].startswith("chatgpt/")}
         if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
             log.debug("Browser OAuth validated — chatgpt models served by proxy")
-            return AuthStatus.OK, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
+            return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
 
         log.debug("No auth evidence found")
         return AuthStatus.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
@@ -159,7 +159,7 @@ class OpenAIProvider(BaseProvider):
             return False, "No key entered."
         config.set_env("OPENAI_API_KEY", key)
         status, msg = self.validate()
-        if status == AuthStatus.OK:
+        if status in (AuthStatus.OK, AuthStatus.UNVERIFIED):
             return True, msg
         return False, msg
 

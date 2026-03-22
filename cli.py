@@ -74,6 +74,9 @@ def cmd_status():
             if auth_status == AuthStatus.OK:
                 icon = "✓"
                 label = "authenticated" if m["provider"] != "ollama" else "reachable"
+            elif auth_status == AuthStatus.UNVERIFIED:
+                icon = "?"
+                label = "unverified"
             elif auth_status == AuthStatus.NOT_CONFIGURED:
                 icon = "✗"
                 label = "not configured"
@@ -109,6 +112,8 @@ def cmd_login(provider_name=None):
             status, msg = p.validate()
             if status == AuthStatus.OK:
                 print(f"  {p.display_name:<20} ✓ {msg}")
+            elif status == AuthStatus.UNVERIFIED:
+                print(f"  {p.display_name:<20} ? {msg}")
             else:
                 print(f"  {p.display_name:<20} ✗ {msg}")
         return

@@ -7,6 +7,7 @@ Required because chatgpt/ provider rejects system messages and LiteLLM
 doesn't strip them in the Anthropic-to-Responses translation path.
 """
 
+import atexit
 import json
 import os
 import re
@@ -66,6 +67,21 @@ MAX_STREAM_BYTES = _parse_size(os.environ.get("PROXY_MAX_STREAM_BYTES"), 100 * 1
 SOCKET_TIMEOUT = _env_int("PROXY_SOCKET_TIMEOUT", 30)
 
 
+_COUNTERS = {
+    "stream_budget_killed": 0,
+    "idle_timeout_inactive": 0,
+    "truncated_stream": 0,
+}
+
+
+def _print_counters():
+    if any(_COUNTERS.values()):
+        print(f"Proxy counters: {_COUNTERS}", file=sys.stderr, flush=True)
+
+
+atexit.register(_print_counters)
+
+
 def _error_response(status_code, message):
     """Build a JSON error body and return (status_code, body_bytes)."""
     return status_code, json.dumps(
@@ -86,6 +102,14 @@ def strip_system(body_bytes):
     system = data.pop("system", None)
     if not system:
         return body_bytes
+
+    messages = data.get("messages")
+    if messages is not None:
+        if not isinstance(messages, list):
+            return body_bytes
+        for msg in messages:
+            if not isinstance(msg, dict) or "role" not in msg:
+                return body_bytes
 
     if isinstance(system, str):
         text = system
@@ -124,15 +148,34 @@ def _is_streaming(resp):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def _send_error(self, status_code, message):
+        code, body = _error_response(status_code, message)
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _proxy(self, method):
-        length = int(self.headers.get("Content-Length", 0))
+        raw_cl = self.headers.get("Content-Length")
+        if raw_cl is None:
+            length = 0
+        else:
+            try:
+                length = int(raw_cl)
+            except ValueError:
+                self._send_error(400, "Invalid Content-Length header")
+                return
+            if length < 0:
+                self._send_error(400, "Invalid Content-Length header")
+                return
+
         if length > MAX_REQUEST_BODY:
-            code, error_msg = _error_response(413, "Request body too large")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(error_msg)))
-            self.end_headers()
-            self.wfile.write(error_msg)
+            self._send_error(413, "Request body too large")
+            return
+
+        if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+            self._send_error(400, "Chunked transfer encoding is not supported")
             return
 
         body = self.rfile.read(length) if length else b""
@@ -159,13 +202,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._buffer_response(resp, conn)
         except Exception as e:
             print(f"Proxy upstream error: {e}", file=sys.stderr, flush=True)
-            code, error_msg = _error_response(502, "Upstream proxy error")
             try:
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(error_msg)))
-                self.end_headers()
-                self.wfile.write(error_msg)
+                self._send_error(502, "Upstream proxy error")
             except Exception:
                 pass
         finally:
@@ -181,12 +219,7 @@ class Handler(BaseHTTPRequestHandler):
             buf.extend(chunk)
             if len(buf) > MAX_RESPONSE_BODY:
                 print(f"Upstream response exceeded {MAX_RESPONSE_BODY} bytes, aborting", file=sys.stderr, flush=True)
-                code, error_msg = _error_response(502, "Upstream response too large")
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(error_msg)))
-                self.end_headers()
-                self.wfile.write(error_msg)
+                self._send_error(502, "Upstream response too large")
                 return
         resp_body = bytes(buf)
 
@@ -217,13 +250,22 @@ class Handler(BaseHTTPRequestHandler):
             print(f"Warning: could not set stream idle timeout on upstream socket "
                   f"(idle timeout protection is NOT active): {e}",
                   file=sys.stderr, flush=True)
+            _COUNTERS["idle_timeout_inactive"] += 1
+            fallback_timeout = min(STREAM_IDLE_TIMEOUT, 60)
+            try:
+                conn.sock.settimeout(fallback_timeout)
+            except Exception:
+                pass
 
         start_time = time.monotonic()
         total_streamed = 0
+        budget_killed = False
         try:
             while True:
                 if time.monotonic() - start_time > MAX_STREAM_LIFETIME:
                     print(f"Stream lifetime exceeded ({MAX_STREAM_LIFETIME}s), aborting", file=sys.stderr, flush=True)
+                    budget_killed = True
+                    _COUNTERS["stream_budget_killed"] += 1
                     break
                 chunk = resp.read(4096)
                 if not chunk:
@@ -231,18 +273,22 @@ class Handler(BaseHTTPRequestHandler):
                 total_streamed += len(chunk)
                 if total_streamed > MAX_STREAM_BYTES:
                     print(f"Stream byte budget exceeded ({MAX_STREAM_BYTES} bytes), aborting", file=sys.stderr, flush=True)
+                    budget_killed = True
+                    _COUNTERS["stream_budget_killed"] += 1
                     break
                 self.wfile.write(f"{len(chunk):x}\r\n".encode())
                 self.wfile.write(chunk)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-            try:
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-            except Exception:
-                pass
+            if not budget_killed:
+                try:
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except Exception:
+                    pass
         except socket.timeout:
             print(f"Stream idle timeout ({STREAM_IDLE_TIMEOUT}s), aborting", file=sys.stderr, flush=True)
+            _COUNTERS["truncated_stream"] += 1
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 

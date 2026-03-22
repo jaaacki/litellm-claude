@@ -18,6 +18,7 @@ def is_placeholder(value):
 
 class AuthStatus(Enum):
     OK = "ok"
+    UNVERIFIED = "unverified"
     NOT_CONFIGURED = "not_configured"
     INVALID = "invalid"
     UNREACHABLE = "unreachable"

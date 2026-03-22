@@ -54,14 +54,31 @@ fi
 # --- Load .env into host environment so providers can read env vars ---
 
 if [ -f "$DIR/.env" ]; then
-    while IFS='=' read -r key value; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip leading/trailing whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
         # Skip comments and blank lines
-        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-        # Strip surrounding quotes
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        # Must contain =
+        [[ "$line" != *=* ]] && continue
+        # Split on first =
+        key="${line%%=*}"
+        value="${line#*=}"
+        # Trim key and value whitespace
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        # Strip matching surrounding quotes
+        if [[ ${#value} -ge 2 ]]; then
+            if [[ "$value" == \"*\" ]]; then
+                value="${value:1:${#value}-2}"
+            elif [[ "$value" == \'*\' ]]; then
+                value="${value:1:${#value}-2}"
+            fi
+        fi
+        [[ -z "$key" ]] && continue
         export "$key=$value"
     done < "$DIR/.env"
 fi
