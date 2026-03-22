@@ -1,6 +1,5 @@
 import logging
 import re
-import sys
 import time
 from datetime import datetime, timezone
 
@@ -113,15 +112,24 @@ class OpenAIProvider(BaseProvider):
 
         # Secondary check: query the proxy's model list endpoint (no billing)
         chatgpt_aliases = {m["alias"] for m in config.list_models() if m["model"].startswith("chatgpt/")}
-        if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
-            log.debug("Browser OAuth validated — chatgpt models served by proxy")
-            return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
+        if chatgpt_aliases:
+            found, err = self._check_proxy_models(chatgpt_aliases)
+            if found:
+                log.debug("Browser OAuth validated — chatgpt models served by proxy")
+                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
+            if err:
+                log.debug("Proxy model check error: %s", err)
 
         log.debug("No auth evidence found")
         return AuthStatus.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
 
     def _check_proxy_models(self, chatgpt_aliases):
-        """Check if chatgpt models are served by the proxy. Returns True if found."""
+        """Check if chatgpt models are served by the proxy.
+
+        Returns (found: bool, error: str|None).
+        found=True means models detected. error is set on transport/parse failures.
+        found=False with error=None means "checked successfully, models not present."
+        """
         master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
         try:
             resp = requests.get(
@@ -131,27 +139,30 @@ class OpenAIProvider(BaseProvider):
             )
             if resp.status_code != 200:
                 log.debug("Proxy /v1/models returned %d", resp.status_code)
-                return False
+                return False, f"proxy returned HTTP {resp.status_code}"
             ct = resp.headers.get("Content-Type", "")
             if "application/json" not in ct:
                 log.debug("Proxy /v1/models returned unexpected content-type: %s", ct)
-                return False
+                return False, f"unexpected content-type: {ct}"
             data = resp.json()
             if not isinstance(data, dict):
                 log.debug("Proxy /v1/models returned non-dict response")
-                return False
+                return False, "non-dict response"
             items = data.get("data")
             if not isinstance(items, list):
                 log.debug("Proxy /v1/models response has no valid 'data' list")
-                return False
+                return False, "no valid 'data' list in response"
             served_ids = {m.get("id", "") for m in items if isinstance(m, dict)}
             if chatgpt_aliases & served_ids:
-                return True
+                return True, None
             log.debug("Proxy /v1/models: no chatgpt models in served set")
-            return False
-        except (requests.RequestException, ValueError) as e:
-            log.debug("Proxy /v1/models check failed: %s", e)
-            return False
+            return False, None
+        except requests.RequestException as e:
+            log.debug("Proxy /v1/models request failed: %s", e)
+            return False, f"request failed: {e}"
+        except ValueError as e:
+            log.debug("Proxy /v1/models JSON parse failed: %s", e)
+            return False, f"invalid JSON: {e}"
 
     def login(self, auth_type="browser_oauth"):
         if auth_type == "api_key":
@@ -247,9 +258,11 @@ class OpenAIProvider(BaseProvider):
 
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
-            if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
-                print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
-                return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"
+            if chatgpt_aliases:
+                found, _ = self._check_proxy_models(chatgpt_aliases)
+                if found:
+                    print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
+                    return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"
 
             elapsed = int(time.time() - start)
             remaining = timeout - elapsed

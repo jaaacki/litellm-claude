@@ -93,12 +93,14 @@ class OllamaProvider(BaseProvider):
 
         # Show available models
         models = self.discover_models()
-        if models:
+        if models is None:
+            print("\n  Warning: Could not discover models (check Ollama status).")
+        elif models:
             print(f"\n  Available models ({len(models)}):\n")
             for alias in models:
                 print(f"    • {alias}")
         else:
-            print("\n  No models found.")
+            print("\n  No models found. Pull one: ollama pull <model>")
 
         # Offer to pull
         pull = input("\n  Pull a model? Enter name (or Enter to skip): ").strip()
@@ -113,7 +115,11 @@ class OllamaProvider(BaseProvider):
         return AuthStatus.OK, "Ollama ready"
 
     def discover_models(self):
-        """Fetch available models from Ollama. Returns dict of alias -> litellm model string."""
+        """Fetch available models from Ollama.
+
+        Returns dict of alias -> litellm model string, or None on error.
+        Empty dict means Ollama is reachable but has no models.
+        """
         host = self.OLLAMA_HOST
         try:
             resp = requests.get(f"{host}/api/tags", timeout=5)
@@ -122,19 +128,19 @@ class OllamaProvider(BaseProvider):
                     "Ollama at %s returned HTTP %d — cannot discover models",
                     host, resp.status_code,
                 )
-                return {}
+                return None
             try:
                 data = resp.json()
             except ValueError:
                 log.warning("Ollama at %s returned invalid JSON", host)
-                return {}
+                return None
             models_list = data.get("models", [])
             if not isinstance(models_list, list):
                 log.warning(
                     "Ollama at %s returned non-list 'models' field: %s",
                     host, type(models_list).__name__,
                 )
-                return {}
+                return None
             models = {}
             for m in models_list:
                 if not isinstance(m, dict):
@@ -147,7 +153,7 @@ class OllamaProvider(BaseProvider):
             return models
         except requests.RequestException as e:
             log.warning("Could not reach Ollama at %s: %s", host, e)
-            return {}
+            return None
 
     def pull_model(self, model_name):
         """Pull a model via Ollama REST API. Returns (success, message)."""
