@@ -65,12 +65,12 @@ while IFS=$'\t' read -r name display auth_ok auth_msg; do
         PROV_DISPLAYS+=("$display  ✗ $auth_msg")
     fi
     PROV_AUTH+=("$auth_ok")
-done < <("$VENV/bin/python" -c '
-import json, sys
-data = json.loads(sys.stdin.read())
+done < <(_PJSON="$PROVIDER_JSON" "$VENV/bin/python" -c "
+import json, os
+data = json.loads(os.environ['_PJSON'])
 for p in data:
-    print(f"{p[\"name\"]}\t{p[\"display\"]}\t{p[\"auth_ok\"]}\t{p[\"auth_msg\"]}")
-' <<< "$PROVIDER_JSON")
+    print(p['name'] + '\t' + p['display'] + '\t' + str(p['auth_ok']) + '\t' + p['auth_msg'])
+")
 
 echo "  Select a provider:"
 echo ""
@@ -154,12 +154,12 @@ while IFS=$'\t' read -r alias model configured; do
     else
         DISPLAY+=("$alias")
     fi
-done < <("$VENV/bin/python" -c '
-import json, sys
-data = json.loads(sys.stdin.read())
+done < <(_MJSON="$MODELS_JSON" "$VENV/bin/python" -c "
+import json, os
+data = json.loads(os.environ['_MJSON'])
 for m in data:
-    print(f"{m[\"alias\"]}\t{m[\"model\"]}\t{m[\"configured\"]}")
-' <<< "$MODELS_JSON")
+    print(m['alias'] + '\t' + m['model'] + '\t' + str(m['configured']))
+")
 
 if [ "${#ALIASES[@]}" -eq 0 ]; then
     if [ "$PROVIDER" = "ollama" ]; then
