@@ -98,6 +98,40 @@ def _check_docker():
         sys.exit(1)
 
 
+def _load_env_file(path):
+    """Parse a .env file into a dict of key→value pairs.
+
+    - Skips blank lines and comment lines (starting with #)
+    - Splits on first '=' only (values may contain '=')
+    - Strips matching surrounding quote pairs (single or double)
+    - Returns empty dict if the file doesn't exist
+    """
+    result = {}
+    if not os.path.exists(path):
+        return result
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "=" not in stripped:
+                    continue
+                key, _, value = stripped.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Strip matching quote pairs
+                if len(value) >= 2:
+                    if (value[0] == '"' and value[-1] == '"') or \
+                       (value[0] == "'" and value[-1] == "'"):
+                        value = value[1:-1]
+                if key:
+                    result[key] = value
+    except OSError as e:
+        log.warning("Cannot read env file %s: %s", path, e)
+    return result
+
+
 PROXY_PID_FILE = os.path.join(DIR, ".proxy.pid")
 PROXY_SCRIPT = os.path.join(DIR, "proxy.py")
 PROXY_PORT = 2555
@@ -132,10 +166,13 @@ def _start_proxy():
     except OSError as e:
         log.warning("Cannot open proxy log %s: %s", proxy_log, e)
         return False
+    # Build environment: inherit current env, overlay .env values
+    env = os.environ.copy()
+    env.update(_load_env_file(os.path.join(DIR, ".env")))
     try:
         proc = subprocess.Popen(
             [python, PROXY_SCRIPT, str(PROXY_PORT)],
-            cwd=DIR, stdout=log_fh, stderr=log_fh,
+            cwd=DIR, stdout=log_fh, stderr=log_fh, env=env,
         )
     except Exception:
         log_fh.close()

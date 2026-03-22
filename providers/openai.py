@@ -75,8 +75,14 @@ class OpenAIProvider(BaseProvider):
             )
             if resp.status_code == 401:
                 return AuthStatus.INVALID, "Invalid OPENAI_API_KEY"
+            if resp.status_code == 403:
+                return AuthStatus.INVALID, "OPENAI_API_KEY lacks required permissions (403 Forbidden)"
+            if resp.status_code == 429:
+                return AuthStatus.OK, "OPENAI_API_KEY accepted (rate limited — key is valid but throttled)"
+            if resp.status_code >= 500:
+                return AuthStatus.UNREACHABLE, f"OpenAI server error (HTTP {resp.status_code}) — key not validated"
             if resp.status_code != 200:
-                return AuthStatus.INVALID, f"OpenAI returned status {resp.status_code}"
+                return AuthStatus.UNREACHABLE, f"OpenAI returned unexpected status {resp.status_code} — key not validated"
             ct = resp.headers.get("Content-Type", "")
             if "application/json" not in ct:
                 return AuthStatus.UNREACHABLE, f"OpenAI returned unexpected content-type: {ct}"
@@ -103,16 +109,16 @@ class OpenAIProvider(BaseProvider):
         logs = container.get_logs_tail(200)
         if self._AUTH_LOG_PATTERN.search(logs):
             log.debug("Browser OAuth auth pattern found in logs")
-            return AuthStatus.OK, "Browser OAuth appears configured (based on container logs)"
+            return AuthStatus.OK, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
 
         # Secondary check: query the proxy's model list endpoint (no billing)
         chatgpt_aliases = {m["alias"] for m in config.list_models() if m["model"].startswith("chatgpt/")}
         if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
             log.debug("Browser OAuth validated — chatgpt models served by proxy")
-            return AuthStatus.OK, "Browser OAuth appears configured (models served by proxy)"
+            return AuthStatus.OK, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
 
         log.debug("No auth evidence found")
-        return AuthStatus.NOT_CONFIGURED, "Not authenticated with OpenAI"
+        return AuthStatus.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
 
     def _check_proxy_models(self, chatgpt_aliases):
         """Check if chatgpt models are served by the proxy. Returns True if found."""

@@ -164,8 +164,9 @@ class OllamaProvider(BaseProvider):
             # Set socket idle timeout to detect stalled transfers
             try:
                 resp.raw._fp.fp.raw._sock.settimeout(60)
-            except (AttributeError, TypeError):
-                pass
+            except (AttributeError, TypeError) as e:
+                log.warning("Could not set socket idle timeout for pull stream "
+                            "(idle timeout protection is not active): %s", e)
 
             last_status = ""
             for line in resp.iter_lines():

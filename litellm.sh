@@ -51,6 +51,21 @@ if ! _deps_ok; then
     "$VENV/bin/pip" install -q -r "$REQS" || { echo "Error: Failed to install dependencies."; exit 1; }
 fi
 
+# --- Load .env into host environment so providers can read env vars ---
+
+if [ -f "$DIR/.env" ]; then
+    while IFS='=' read -r key value; do
+        # Skip comments and blank lines
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        # Strip surrounding quotes
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+        export "$key=$value"
+    done < "$DIR/.env"
+fi
+
 # --- Forward to Python CLI ---
 
 export LITELLM_CLI_NAME="./litellm.sh"

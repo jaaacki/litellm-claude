@@ -32,6 +32,12 @@ def _load_yaml():
         if os.path.exists(CONFIG_BACKUP):
             print(f"  A backup exists at litellm_config.yaml.bak")
         return MalformedConfig({"model_list": [], "general_settings": {}})
+    if not isinstance(data, dict):
+        log.warning("litellm_config.yaml has invalid structure (expected mapping, got %s)", type(data).__name__)
+        print(f"Warning: litellm_config.yaml has invalid structure (expected YAML mapping, got {type(data).__name__})")
+        if os.path.exists(CONFIG_BACKUP):
+            print(f"  A backup exists at litellm_config.yaml.bak")
+        return MalformedConfig({"model_list": [], "general_settings": {}})
     if "model_list" not in data:
         data["model_list"] = []
     return data

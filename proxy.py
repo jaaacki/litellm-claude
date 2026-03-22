@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 import http.client
 import socket
 import threading
@@ -60,6 +61,8 @@ MAX_RESPONSE_BODY = _parse_size(os.environ.get("PROXY_MAX_RESPONSE_BODY"), 50 * 
 CONNECT_TIMEOUT = _env_int("PROXY_CONNECT_TIMEOUT", 10)
 READ_TIMEOUT = _env_int("PROXY_READ_TIMEOUT", 300)
 STREAM_IDLE_TIMEOUT = _env_int("PROXY_STREAM_IDLE_TIMEOUT", 60)
+MAX_STREAM_LIFETIME = _env_int("PROXY_MAX_STREAM_LIFETIME", 600)  # 10 min
+MAX_STREAM_BYTES = _parse_size(os.environ.get("PROXY_MAX_STREAM_BYTES"), 100 * 1024**2)  # 100MB
 SOCKET_TIMEOUT = _env_int("PROXY_SOCKET_TIMEOUT", 30)
 
 
@@ -75,6 +78,9 @@ def strip_system(body_bytes):
     try:
         data = json.loads(body_bytes)
     except Exception:
+        return body_bytes
+
+    if not isinstance(data, dict):
         return body_bytes
 
     system = data.pop("system", None)
@@ -147,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if _is_streaming(resp):
                 self._stream_response(resp, conn)
+            elif resp.getheader("Content-Length") is None:
+                self._stream_response(resp, conn)
             else:
                 self._buffer_response(resp, conn)
         except Exception as e:
@@ -165,14 +173,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _buffer_response(self, resp, conn):
         """Forward a non-streaming response after fully buffering it (with size cap)."""
-        chunks = []
-        total = 0
+        buf = bytearray()
         while True:
             chunk = resp.read(65536)
             if not chunk:
                 break
-            total += len(chunk)
-            if total > MAX_RESPONSE_BODY:
+            buf.extend(chunk)
+            if len(buf) > MAX_RESPONSE_BODY:
                 print(f"Upstream response exceeded {MAX_RESPONSE_BODY} bytes, aborting", file=sys.stderr, flush=True)
                 code, error_msg = _error_response(502, "Upstream response too large")
                 self.send_response(code)
@@ -181,8 +188,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(error_msg)
                 return
-            chunks.append(chunk)
-        resp_body = b"".join(chunks)
+        resp_body = bytes(buf)
 
         self.send_response(resp.status)
         for k, v in resp.getheaders():
@@ -207,20 +213,34 @@ class Handler(BaseHTTPRequestHandler):
         # the BufferedReader has data in its internal buffer).
         try:
             resp.fp.raw._sock.settimeout(STREAM_IDLE_TIMEOUT)
-        except (AttributeError, TypeError):
-            pass  # Best-effort; READ_TIMEOUT still applies
+        except (AttributeError, TypeError) as e:
+            print(f"Warning: could not set stream idle timeout on upstream socket "
+                  f"(idle timeout protection is NOT active): {e}",
+                  file=sys.stderr, flush=True)
 
+        start_time = time.monotonic()
+        total_streamed = 0
         try:
             while True:
+                if time.monotonic() - start_time > MAX_STREAM_LIFETIME:
+                    print(f"Stream lifetime exceeded ({MAX_STREAM_LIFETIME}s), aborting", file=sys.stderr, flush=True)
+                    break
                 chunk = resp.read(4096)
                 if not chunk:
+                    break
+                total_streamed += len(chunk)
+                if total_streamed > MAX_STREAM_BYTES:
+                    print(f"Stream byte budget exceeded ({MAX_STREAM_BYTES} bytes), aborting", file=sys.stderr, flush=True)
                     break
                 self.wfile.write(f"{len(chunk):x}\r\n".encode())
                 self.wfile.write(chunk)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
         except socket.timeout:
             print(f"Stream idle timeout ({STREAM_IDLE_TIMEOUT}s), aborting", file=sys.stderr, flush=True)
         except (BrokenPipeError, ConnectionResetError, OSError):
