@@ -90,26 +90,31 @@ def _error_response(status_code, message):
 
 
 def strip_system(body_bytes):
-    """Remove 'system' field, merge into first user message."""
+    """Remove 'system' field, merge into first user message.
+
+    Returns (body_bytes_or_None, error_or_None).
+    On success or pass-through: (bytes, None).
+    On validation error: (None, error_string).
+    """
     try:
         data = json.loads(body_bytes)
     except Exception:
-        return body_bytes
+        return (body_bytes, None)
 
     if not isinstance(data, dict):
-        return body_bytes
+        return (body_bytes, None)
 
     system = data.pop("system", None)
     if not system:
-        return body_bytes
+        return (body_bytes, None)
 
     messages = data.get("messages")
     if messages is not None:
         if not isinstance(messages, list):
-            return body_bytes
+            return (None, "messages field must be a list")
         for msg in messages:
             if not isinstance(msg, dict) or "role" not in msg:
-                return body_bytes
+                return (None, "each message must be an object with a role field")
 
     if isinstance(system, str):
         text = system
@@ -135,7 +140,7 @@ def strip_system(body_bytes):
         else:
             data["messages"].insert(0, {"role": "user", "content": text})
 
-    return json.dumps(data).encode()
+    return (json.dumps(data).encode(), None)
 
 
 def _is_streaming(resp):
@@ -159,6 +164,9 @@ class Handler(BaseHTTPRequestHandler):
     def _proxy(self, method):
         raw_cl = self.headers.get("Content-Length")
         if raw_cl is None:
+            if method in ("POST", "PUT", "PATCH"):
+                self._send_error(411, "Content-Length required")
+                return
             length = 0
         else:
             try:
@@ -181,7 +189,10 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
 
         if method == "POST" and "/v1/messages" in self.path:
-            body = strip_system(body)
+            body, err = strip_system(body)
+            if err:
+                self._send_error(400, err)
+                return
 
         conn = http.client.HTTPConnection(LITELLM_HOST, LITELLM_PORT, timeout=CONNECT_TIMEOUT)
         try:
@@ -190,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
             headers["Content-Length"] = str(len(body))
             headers["Host"] = f"{LITELLM_HOST}:{LITELLM_PORT}"
 
-            conn.request(method, self.path, body=body if method == "POST" else None, headers=headers)
+            conn.request(method, self.path, body=body if method in ("POST", "PUT", "PATCH") else None, headers=headers)
             conn.sock.settimeout(READ_TIMEOUT)
             resp = conn.getresponse()
 
@@ -199,7 +210,14 @@ class Handler(BaseHTTPRequestHandler):
             elif resp.getheader("Content-Length") is None:
                 self._stream_response(resp, conn)
             else:
-                self._buffer_response(resp, conn)
+                try:
+                    upstream_cl = int(resp.getheader("Content-Length"))
+                except (TypeError, ValueError):
+                    upstream_cl = 0
+                if upstream_cl > MAX_RESPONSE_BODY:
+                    self._stream_response(resp, conn)
+                else:
+                    self._buffer_response(resp, conn)
         except Exception as e:
             print(f"Proxy upstream error: {e}", file=sys.stderr, flush=True)
             try:
@@ -221,15 +239,13 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"Upstream response exceeded {MAX_RESPONSE_BODY} bytes, aborting", file=sys.stderr, flush=True)
                 self._send_error(502, "Upstream response too large")
                 return
-        resp_body = bytes(buf)
-
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() not in ("transfer-encoding", "connection", "keep-alive", "content-length"):
                 self.send_header(k, v)
-        self.send_header("Content-Length", str(len(resp_body)))
+        self.send_header("Content-Length", str(len(buf)))
         self.end_headers()
-        self.wfile.write(resp_body)
+        self.wfile.write(buf)
 
     def _stream_response(self, resp, conn):
         """Forward an SSE / chunked response incrementally with idle timeout."""

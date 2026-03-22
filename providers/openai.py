@@ -78,7 +78,7 @@ class OpenAIProvider(BaseProvider):
             if resp.status_code == 403:
                 return AuthStatus.INVALID, "OPENAI_API_KEY lacks required permissions (403 Forbidden)"
             if resp.status_code == 429:
-                return AuthStatus.UNVERIFIED, "OPENAI_API_KEY may be valid (429 received, but cannot confirm upstream accepted credential)"
+                return AuthStatus.UNREACHABLE, "Rate limited (HTTP 429) — credential not verified"
             if resp.status_code >= 500:
                 return AuthStatus.UNREACHABLE, f"OpenAI server error (HTTP {resp.status_code}) — key not validated"
             if resp.status_code != 200:
@@ -137,7 +137,14 @@ class OpenAIProvider(BaseProvider):
                 log.debug("Proxy /v1/models returned unexpected content-type: %s", ct)
                 return False
             data = resp.json()
-            served_ids = {m.get("id", "") for m in data.get("data", [])}
+            if not isinstance(data, dict):
+                log.debug("Proxy /v1/models returned non-dict response")
+                return False
+            items = data.get("data")
+            if not isinstance(items, list):
+                log.debug("Proxy /v1/models response has no valid 'data' list")
+                return False
+            served_ids = {m.get("id", "") for m in items if isinstance(m, dict)}
             if chatgpt_aliases & served_ids:
                 return True
             log.debug("Proxy /v1/models: no chatgpt models in served set")
@@ -159,8 +166,10 @@ class OpenAIProvider(BaseProvider):
             return False, "No key entered."
         config.set_env("OPENAI_API_KEY", key)
         status, msg = self.validate()
-        if status in (AuthStatus.OK, AuthStatus.UNVERIFIED):
+        if status == AuthStatus.OK:
             return True, msg
+        if status == AuthStatus.UNVERIFIED:
+            return False, f"Key saved but could not verify: {msg}"
         return False, msg
 
     def _login_browser(self):
@@ -237,14 +246,14 @@ class OpenAIProvider(BaseProvider):
             # Check logs for auth patterns
             logs = container.get_logs_since(since)
             if self._AUTH_LOG_PATTERN.search(logs):
-                print("\n  ✓ Authenticated with OpenAI via browser OAuth!")
-                return True, "Authenticated via browser OAuth"
+                print("\n  ? Browser OAuth may be active (log pattern detected, not independently verified)")
+                return True, "Browser OAuth may be active (log pattern detected, not independently verified)"
 
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
             if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
-                print("\n  ✓ Authenticated with OpenAI via browser OAuth!")
-                return True, "Authenticated via browser OAuth"
+                print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
+                return True, "Browser OAuth may be active (models detected in proxy, not independently verified)"
 
             elapsed = int(time.time() - start)
             remaining = timeout - elapsed
