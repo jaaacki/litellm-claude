@@ -58,7 +58,7 @@ LITELLM_PORT = _env_int("PROXY_LITELLM_PORT", 4000)
 LISTEN_PORT = _env_int("PROXY_LISTEN_PORT", int(sys.argv[1]) if len(sys.argv) > 1 else 2555)
 MAX_WORKERS = _env_int("PROXY_MAX_WORKERS", 20)
 MAX_REQUEST_BODY = _parse_size(os.environ.get("PROXY_MAX_REQUEST_BODY"), 10 * 1024**2)   # 10MB
-MAX_RESPONSE_BODY = _parse_size(os.environ.get("PROXY_MAX_RESPONSE_BODY"), 10 * 1024**2)  # 10MB
+MAX_RESPONSE_BODY = _parse_size(os.environ.get("PROXY_MAX_RESPONSE_BODY"), 2 * 1024**2)   # 2MB
 CONNECT_TIMEOUT = _env_int("PROXY_CONNECT_TIMEOUT", 10)
 READ_TIMEOUT = _env_int("PROXY_READ_TIMEOUT", 300)
 STREAM_IDLE_TIMEOUT = _env_int("PROXY_STREAM_IDLE_TIMEOUT", 60)
@@ -99,7 +99,7 @@ def strip_system(body_bytes):
     try:
         data = json.loads(body_bytes)
     except Exception:
-        return (body_bytes, None)
+        return (None, "Request body must be valid JSON")
 
     if not isinstance(data, dict):
         return (None, "Request body must be a JSON object")
@@ -145,8 +145,8 @@ def strip_system(body_bytes):
 
 def _is_streaming(resp):
     """Return True if the upstream response should be streamed to the client."""
-    ct = resp.getheader("Content-Type", "")
-    te = resp.getheader("Transfer-Encoding", "")
+    ct = resp.getheader("Content-Type", "").lower()
+    te = resp.getheader("Transfer-Encoding", "").lower()
     return "text/event-stream" in ct or "chunked" in te
 
 

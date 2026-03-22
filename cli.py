@@ -155,11 +155,15 @@ def cmd_login(provider_name=None):
     ok, msg = provider.login(auth_type)
     if ok:
         print(f"\n  ✓ {msg}")
-    elif "not independently verified" in msg or "could not verify" in msg:
-        print(f"\n  ? {msg}")
     else:
-        print(f"\n  ✗ {msg}")
-        sys.exit(1)
+        # Check if provider has circumstantial evidence (UNVERIFIED)
+        # rather than a hard failure — branch on structured state, not prose
+        post_status, _ = provider.validate()
+        if post_status == AuthStatus.UNVERIFIED:
+            print(f"\n  ? {msg}")
+        else:
+            print(f"\n  ✗ {msg}")
+            sys.exit(1)
 
 
 def _print_restart_failure():
