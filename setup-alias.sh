@@ -118,6 +118,9 @@ configured = {m["alias"]: m["model"] for m in config.list_models()}
 # Get models from provider
 if provider.name == "ollama":
     catalog = provider.discover_models()
+    if catalog is None:
+        print("Error: Cannot reach Ollama. Check that it is running.", file=sys.stderr)
+        sys.exit(1)
 else:
     catalog = provider.models
 

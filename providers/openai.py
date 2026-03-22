@@ -119,6 +119,7 @@ class OpenAIProvider(BaseProvider):
                 return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models configured in proxy, but cannot independently verify upstream auth)"
             if err:
                 log.debug("Proxy model check error: %s", err)
+                return AuthStatus.UNREACHABLE, f"Cannot verify browser auth (proxy check failed: {err})"
 
         log.debug("No auth evidence found")
         return AuthStatus.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
@@ -259,7 +260,9 @@ class OpenAIProvider(BaseProvider):
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
             if chatgpt_aliases:
-                found, _ = self._check_proxy_models(chatgpt_aliases)
+                found, err = self._check_proxy_models(chatgpt_aliases)
+                if err:
+                    log.debug("Proxy model check failed during login poll: %s", err)
                 if found:
                     print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
                     return AuthStatus.UNVERIFIED, "Browser OAuth may be active (models detected in proxy, not independently verified)"

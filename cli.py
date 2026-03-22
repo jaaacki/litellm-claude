@@ -136,22 +136,8 @@ def cmd_login(provider_name=None):
     if status == AuthStatus.OK:
         print(f"  ✓ Already authenticated with {provider.display_name}. {msg}")
         return
-    elif len(provider.auth_types) == 1:
-        auth_type = provider.auth_types[0]
-    else:
-        print(f"\n  {provider.display_name} supports multiple auth methods:\n")
-        for i, at in enumerate(provider.auth_types, 1):
-            label = at.replace("_", " ").title()
-            print(f"    [{i}] {label}")
-        print()
-        choice = input("  Choose [1]: ").strip() or "1"
-        try:
-            idx = int(choice) - 1
-            auth_type = provider.auth_types[idx]
-        except (ValueError, IndexError):
-            print("  Invalid choice.")
-            sys.exit(1)
 
+    auth_type = _choose_auth_type(provider)
     login_status, msg = provider.login(auth_type)
     if login_status == AuthStatus.OK:
         print(f"\n  ✓ {msg}")

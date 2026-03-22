@@ -369,8 +369,8 @@ class BoundedThreadServer(HTTPServer):
                     b"Connection: close\r\n\r\n"
                     b'{"error":{"message":"Server overloaded","type":"proxy_error"}}'
                 )
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass  # Best-effort reject; client may already be gone
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                log.debug("503 overload response failed (client gone): %s", e)
             self.shutdown_request(req)
             return
         self._pool.submit(self._handle, req, addr)
@@ -379,8 +379,8 @@ class BoundedThreadServer(HTTPServer):
         try:
             req.settimeout(SOCKET_TIMEOUT)
             self.finish_request(req, addr)
-        except Exception as e:
-            log.error("Request handling error for %s: %s", addr, e)
+        except Exception:
+            log.error("Unhandled request error for %s", addr, exc_info=True)
         finally:
             self.shutdown_request(req)
             self._semaphore.release()
