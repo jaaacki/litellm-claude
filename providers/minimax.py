@@ -18,7 +18,7 @@ class MiniMaxProvider(BaseProvider):
 
     def get_extra_params(self):
         """Extra litellm_params for MiniMax models."""
-        return {"api_base": f"{self.API_BASE}/v1", "api_key": config.get_env("MINIMAX_API_KEY")}
+        return {"api_base": f"{self.API_BASE}/v1", "api_key": "os.environ/MINIMAX_API_KEY"}
 
     # LiteLLM appends /v1/ internally, so no trailing /v1 here
     API_BASE = "https://api.minimax.io"

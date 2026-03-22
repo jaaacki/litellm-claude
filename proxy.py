@@ -162,6 +162,110 @@ def strip_system(body_bytes):
     return json.dumps(data).encode()
 
 
+def _needs_openai_translation(body_bytes):
+    """Check if this Anthropic /v1/messages request targets a model that
+    needs OpenAI-compatible translation (e.g. MiniMax via openai/ prefix).
+    Reads litellm_config.yaml to check the model's litellm prefix."""
+    try:
+        data = json.loads(body_bytes)
+    except (ValueError, TypeError):
+        return False
+    model = data.get("model", "")
+    # Check litellm_config.yaml for this model's litellm prefix
+    try:
+        import yaml
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "litellm_config.yaml")
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        for entry in cfg.get("model_list", []):
+            if entry.get("model_name") == model:
+                litellm_model = entry.get("litellm_params", {}).get("model", "")
+                # chatgpt/ models have native Anthropic support in LiteLLM
+                if litellm_model.startswith("openai/"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _anthropic_to_openai(body_bytes):
+    """Convert Anthropic /v1/messages request body to OpenAI /v1/chat/completions format."""
+    data = json.loads(body_bytes)
+    messages = []
+
+    # Convert system to a system message
+    system = data.pop("system", None)
+    if system:
+        if isinstance(system, str):
+            messages.append({"role": "system", "content": system})
+        elif isinstance(system, list):
+            text = "\n".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in system
+            )
+            if text:
+                messages.append({"role": "system", "content": text})
+
+    # Convert messages
+    for msg in data.get("messages", []):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            # Flatten content blocks to text
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            content = "\n".join(text_parts)
+        messages.append({"role": role, "content": content})
+
+    openai_body = {
+        "model": data.get("model"),
+        "messages": messages,
+    }
+    if data.get("max_tokens"):
+        openai_body["max_tokens"] = data["max_tokens"]
+    if data.get("temperature") is not None:
+        openai_body["temperature"] = data["temperature"]
+    if data.get("stream"):
+        openai_body["stream"] = True
+
+    return json.dumps(openai_body).encode()
+
+
+def _openai_to_anthropic(response_bytes):
+    """Convert OpenAI /v1/chat/completions response to Anthropic /v1/messages format."""
+    try:
+        data = json.loads(response_bytes)
+    except (ValueError, TypeError):
+        return response_bytes
+
+    choices = data.get("choices", [])
+    content = []
+    if choices:
+        msg = choices[0].get("message", {})
+        text = msg.get("content", "")
+        if text:
+            content.append({"type": "text", "text": text})
+
+    usage = data.get("usage", {})
+    anthropic_resp = {
+        "id": data.get("id", ""),
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+        "model": data.get("model", ""),
+        "stop_reason": choices[0].get("finish_reason", "end_turn") if choices else "end_turn",
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    }
+    return json.dumps(anthropic_resp).encode()
+
+
 def _is_streaming(resp):
     """Return True if the upstream response should be streamed to the client."""
     ct = resp.getheader("Content-Type", "").lower()
@@ -214,13 +318,21 @@ class Handler(BaseHTTPRequestHandler):
 
         body = self.rfile.read(length) if length else b""
 
+        translate_response = False
         if method == "POST" and "/v1/messages" in self.path:
             err = _validate_messages(body)
             if err:
                 _COUNTERS["invalid_request"] += 1
                 self._send_error(400, err)
                 return
-            body = strip_system(body)
+            if _needs_openai_translation(body):
+                # Rewrite Anthropic request to OpenAI format for openai/ models
+                body = _anthropic_to_openai(body)
+                self.path = "/v1/chat/completions"
+                translate_response = True
+                log.debug("Translated Anthropic→OpenAI for %s", self.path)
+            else:
+                body = strip_system(body)
 
         conn = http.client.HTTPConnection(LITELLM_HOST, LITELLM_PORT, timeout=CONNECT_TIMEOUT)
         try:
@@ -228,6 +340,12 @@ class Handler(BaseHTTPRequestHandler):
                        if k.lower() not in ("host", "content-length", "transfer-encoding")}
             headers["Content-Length"] = str(len(body))
             headers["Host"] = f"{LITELLM_HOST}:{LITELLM_PORT}"
+
+            # When translating Anthropic→OpenAI, convert auth header
+            if translate_response:
+                api_key = headers.pop("x-api-key", None) or headers.pop("X-Api-Key", None)
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
 
             conn.request(method, self.path, body=body if method in ("POST", "PUT", "PATCH") else None, headers=headers)
             conn.sock.settimeout(READ_TIMEOUT)
@@ -245,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
                 if upstream_cl > MAX_RESPONSE_BODY:
                     self._stream_response(resp, conn)
                 else:
-                    self._buffer_response(resp, conn)
+                    self._buffer_response(resp, conn, translate_response)
         except socket.timeout as e:
             log.warning("Upstream timeout for %s %s: %s", method, self.path, e)
             self._try_send_error(504, "Upstream timeout")
@@ -261,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _buffer_response(self, resp, conn):
+    def _buffer_response(self, resp, conn, translate=False):
         """Forward a non-streaming response after fully buffering it (with size cap)."""
         buf = bytearray()
         while True:
@@ -273,6 +391,8 @@ class Handler(BaseHTTPRequestHandler):
                 log.warning("Upstream response exceeded %d bytes for %s", MAX_RESPONSE_BODY, self.path)
                 self._send_error(502, "Upstream response too large")
                 return
+        if translate and resp.status == 200:
+            buf = _openai_to_anthropic(bytes(buf))
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() not in ("transfer-encoding", "connection", "keep-alive", "content-length"):
