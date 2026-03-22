@@ -23,7 +23,7 @@ The codebase enforces strict layer boundaries for error handling, logging, and I
 - **proxy.py** (HTTP boundary) — uses `logging` module exclusively. Translates internal errors to HTTP JSON envelopes (`_error_response()`). Typed exception handlers map to HTTP status codes (504 timeout, 502 refused/error). One thread safety-net catch with `exc_info=True` traceback. No `print()`.
 - **config.py, container.py, providers/** (library layer) — return `(Status, str)` tuples using the unified `Status` enum (`providers/base.py`). No `print()`, no `sys.exit()`. Exceptions either propagate (e.g. `DockerNotFoundError`) or are caught and returned as status.
 - **cli.py** (CLI boundary) — owns all user-facing output (`print()`), interactive prompting (`input()`), and process exit (`sys.exit()`). Translates `Status` returns to icons and messages. Catches `DockerNotFoundError` at the top level.
-- **litellm.sh, setup-alias.sh** (shell boundary) — delegate .env parsing to `config.load_env_file()` via Python. Translate exit codes to user messages.
+- **litellm.sh** (shell boundary) — delegates .env parsing to `config.load_env_file()` via Python. Translates exit codes to user messages.
 
 ### Error Contract
 
@@ -51,7 +51,6 @@ One canonical parser: `config.load_env_file()`. All consumers route through it:
 - `config.py` — uses it directly for `get_env()`, `set_env()`, `remove_env()`
 - `container.py` — imports `load_env_file` from config for proxy env overlay
 - `litellm.sh` — calls `load_env_file()` via Python to export vars to host env
-- `setup-alias.sh` — generated function calls `load_env_file()` via Python at runtime
 
 Format contract: skip blank/comment lines, split on first `=`, strip matching quote pairs.
 
@@ -68,7 +67,6 @@ Key files:
 - **container.py** — Docker container lifecycle + proxy.py process management
 - **proxy.py** — system message rewriter proxy (threaded HTTP server, supports SSE streaming pass-through, `logging`-based observability)
 - **providers/** — provider registry with `BaseProvider` ABC and `Status` enum
-- **setup-alias.sh** — interactive script to create shell functions for Claude Code aliases
 - **docker-compose.yml** — single-service definition, maps port 4000 (not 2555; proxy.py handles 2555)
 - **litellm_config.yaml** — model registry (managed by CLI, uses litellm model string format like `chatgpt/gpt-5.4`, `dashscope/qwen-max`, `ollama/llama3`)
 - **.env** — API keys and master key (managed by CLI, chmod 600)
@@ -80,23 +78,22 @@ Key files:
 All operations go through the CLI wrapper:
 
 ```bash
-./litellm.sh up              # Start proxy (port 2555)
-./litellm.sh down            # Stop and remove container
+./litellm.sh start           # Start proxy (port 2555)
+./litellm.sh stop            # Stop and remove container
 ./litellm.sh restart         # Restart container (force-recreate to pick up .env/config changes)
 ./litellm.sh status          # Container status + per-model auth status
 ./litellm.sh logs            # Stream container logs (follow mode)
-./litellm.sh models          # List configured models with providers
 
-./litellm.sh add             # Interactive wizard to add models/providers
-./litellm.sh remove          # Interactive wizard to remove models
+./litellm.sh model add       # Add models (interactive, pick provider first)
+./litellm.sh model rm        # Remove configured models
+./litellm.sh model list      # List configured models
 
-./litellm.sh login           # Show auth status for all providers
-./litellm.sh login openai    # Authenticate with OpenAI (browser OAuth or API key)
-./litellm.sh login alibaba   # Authenticate with DashScope (API key)
-./litellm.sh login ollama    # Check Ollama connectivity, cloud login, pull models
+./litellm.sh provider list   # Show available providers
+./litellm.sh provider status # Show auth status per provider
+./litellm.sh provider login  # Authenticate with a provider
+./litellm.sh provider logout # Remove provider credentials
 
-./litellm.sh claude [args]   # Launch Claude Code through the proxy
-./setup-alias.sh             # Create persistent shell alias for Claude Code
+./litellm.sh launch claude   # Launch Claude Code through the proxy
 ```
 
 ## Provider System
