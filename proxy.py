@@ -164,7 +164,7 @@ def strip_system(body_bytes):
 
 # Cache: models that need OpenAI translation (loaded once at startup)
 _OPENAI_TRANSLATED_MODELS = None
-# Cache: all configured model names (for fallback routing)
+# Cache: ordered list of configured model names (for fallback routing)
 _ALL_CONFIGURED_MODELS = None
 
 def _load_translated_models():
@@ -173,7 +173,7 @@ def _load_translated_models():
     Called once at startup, cached for all subsequent requests."""
     global _OPENAI_TRANSLATED_MODELS, _ALL_CONFIGURED_MODELS
     translated = set()
-    all_models = set()
+    all_models = []  # ordered list, first model is the default fallback
     try:
         import yaml
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "litellm_config.yaml")
@@ -181,7 +181,7 @@ def _load_translated_models():
             cfg = yaml.safe_load(f)
         for entry in cfg.get("model_list", []):
             name = entry.get("model_name", "")
-            all_models.add(name)
+            all_models.append(name)
             litellm_model = entry.get("litellm_params", {}).get("model", "")
             if litellm_model.startswith("openai/"):
                 translated.add(name)
@@ -190,7 +190,7 @@ def _load_translated_models():
     _OPENAI_TRANSLATED_MODELS = translated
     _ALL_CONFIGURED_MODELS = all_models
     log.debug("Models needing OpenAI translation: %s", translated)
-    log.debug("All configured models: %s", all_models)
+    log.debug("All configured models (ordered): %s", all_models)
 
 
 def _remap_model_if_needed(body_bytes):
@@ -208,8 +208,8 @@ def _remap_model_if_needed(body_bytes):
         return body_bytes
     model = data.get("model", "")
     if model and model not in _ALL_CONFIGURED_MODELS:
-        # Pick first configured model as fallback
-        fallback = next(iter(_ALL_CONFIGURED_MODELS))
+        # Pick first configured model as fallback (deterministic, config file order)
+        fallback = _ALL_CONFIGURED_MODELS[0]
         log.info("Remapping unconfigured model %s → %s", model, fallback)
         data["model"] = fallback
         return json.dumps(data).encode()
@@ -286,7 +286,7 @@ def _openai_to_anthropic(response_bytes):
     content = []
     if choices:
         msg = choices[0].get("message", {})
-        text = msg.get("content", "")
+        text = _strip_think_tags(msg.get("content", ""))
         if text:
             content.append({"type": "text", "text": text})
 
@@ -304,6 +304,15 @@ def _openai_to_anthropic(response_bytes):
         },
     }
     return json.dumps(anthropic_resp).encode()
+
+
+def _strip_think_tags(text):
+    """Strip MiniMax <think>...</think> reasoning blocks from response text."""
+    if not text or "<think>" not in text:
+        return text
+    # Remove <think>...</think> blocks (including multiline)
+    cleaned = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL)
+    return cleaned.strip()
 
 
 def _is_streaming(resp):
@@ -458,7 +467,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(buf)
 
     def _stream_translated(self, resp, conn):
-        """Read OpenAI SSE stream, translate each chunk to Anthropic SSE events inline."""
+        """Read OpenAI SSE stream, translate each chunk to Anthropic SSE events inline.
+
+        Strips MiniMax <think>...</think> reasoning blocks so Claude Code
+        only sees the final answer. Tracks accumulated text to apply the
+        strip at content boundaries.
+        """
         try:
             resp.fp.raw._sock.settimeout(STREAM_IDLE_TIMEOUT)
         except (AttributeError, TypeError):
@@ -470,7 +484,9 @@ class Handler(BaseHTTPRequestHandler):
         model_name = ""
         input_tokens = 0
         output_tokens = 0
+        accumulated_text = ""  # buffer text to strip think tags at the end
         buf = b""
+        done = False
         start_time = time.monotonic()
 
         def _send_event(event_str):
@@ -482,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            while True:
+            while not done:
                 if time.monotonic() - start_time > MAX_STREAM_LIFETIME:
                     log.warning("Translated stream lifetime exceeded for %s", self.path)
                     break
@@ -497,6 +513,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     data_str = line_str[6:].strip()
                     if data_str == "[DONE]":
+                        done = True
                         break
                     try:
                         chunk = json.loads(data_str)
@@ -517,6 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                     delta = choices[0].get("delta", {})
                     finish_reason = choices[0].get("finish_reason")
 
+                    # Emit message_start on first chunk
                     if not started:
                         started = True
                         evt = {
@@ -530,17 +548,24 @@ class Handler(BaseHTTPRequestHandler):
                         }
                         _send_event(f"event: message_start\ndata: {json.dumps(evt)}\n\n")
 
+                    # Accumulate text (we strip think tags at finish)
                     text = delta.get("content", "")
-                    if text and not content_started:
-                        content_started = True
-                        _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n")
-                        _send_event("event: ping\ndata: {\"type\": \"ping\"}\n\n")
-
                     if text:
-                        evt = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
-                        _send_event(f"event: content_block_delta\ndata: {json.dumps(evt)}\n\n")
+                        accumulated_text += text
 
                     if finish_reason:
+                        # Strip think tags from the complete accumulated response
+                        clean_text = _strip_think_tags(accumulated_text)
+                        output_tokens = output_tokens or max(1, len(clean_text) // 4)
+
+                        if clean_text:
+                            if not content_started:
+                                content_started = True
+                                _send_event(f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n")
+                                _send_event("event: ping\ndata: {\"type\": \"ping\"}\n\n")
+                            evt = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": clean_text}}
+                            _send_event(f"event: content_block_delta\ndata: {json.dumps(evt)}\n\n")
+
                         if content_started:
                             _send_event(f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n")
                         stop = "end_turn" if finish_reason == "stop" else finish_reason
