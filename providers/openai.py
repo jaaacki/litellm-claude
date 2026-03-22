@@ -247,13 +247,13 @@ class OpenAIProvider(BaseProvider):
             logs = container.get_logs_since(since)
             if self._AUTH_LOG_PATTERN.search(logs):
                 print("\n  ? Browser OAuth may be active (log pattern detected, not independently verified)")
-                return True, "Browser OAuth may be active (log pattern detected, not independently verified)"
+                return False, "Browser OAuth may be active (log pattern detected, not independently verified)"
 
             # Lightweight proxy check — query /v1/models (no billing) to see
             # if chatgpt/ models are now being served after login
             if chatgpt_aliases and self._check_proxy_models(chatgpt_aliases):
                 print("\n  ? Browser OAuth may be active (models detected in proxy, not independently verified)")
-                return True, "Browser OAuth may be active (models detected in proxy, not independently verified)"
+                return False, "Browser OAuth may be active (models detected in proxy, not independently verified)"
 
             elapsed = int(time.time() - start)
             remaining = timeout - elapsed

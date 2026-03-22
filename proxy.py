@@ -58,7 +58,7 @@ LITELLM_PORT = _env_int("PROXY_LITELLM_PORT", 4000)
 LISTEN_PORT = _env_int("PROXY_LISTEN_PORT", int(sys.argv[1]) if len(sys.argv) > 1 else 2555)
 MAX_WORKERS = _env_int("PROXY_MAX_WORKERS", 20)
 MAX_REQUEST_BODY = _parse_size(os.environ.get("PROXY_MAX_REQUEST_BODY"), 10 * 1024**2)   # 10MB
-MAX_RESPONSE_BODY = _parse_size(os.environ.get("PROXY_MAX_RESPONSE_BODY"), 50 * 1024**2)  # 50MB
+MAX_RESPONSE_BODY = _parse_size(os.environ.get("PROXY_MAX_RESPONSE_BODY"), 10 * 1024**2)  # 10MB
 CONNECT_TIMEOUT = _env_int("PROXY_CONNECT_TIMEOUT", 10)
 READ_TIMEOUT = _env_int("PROXY_READ_TIMEOUT", 300)
 STREAM_IDLE_TIMEOUT = _env_int("PROXY_STREAM_IDLE_TIMEOUT", 60)
@@ -102,19 +102,20 @@ def strip_system(body_bytes):
         return (body_bytes, None)
 
     if not isinstance(data, dict):
-        return (body_bytes, None)
+        return (None, "Request body must be a JSON object")
 
     system = data.pop("system", None)
     if not system:
         return (body_bytes, None)
 
+    # When system is present, messages MUST be a valid non-empty list of
+    # message objects. Fail closed — do not forward malformed payloads.
     messages = data.get("messages")
-    if messages is not None:
-        if not isinstance(messages, list):
-            return (None, "messages field must be a list")
-        for msg in messages:
-            if not isinstance(msg, dict) or "role" not in msg:
-                return (None, "each message must be an object with a role field")
+    if not isinstance(messages, list) or len(messages) == 0:
+        return (None, "system requires a non-empty messages list")
+    for msg in messages:
+        if not isinstance(msg, dict) or "role" not in msg:
+            return (None, "each message must be an object with a role field")
 
     if isinstance(system, str):
         text = system
@@ -126,19 +127,18 @@ def strip_system(body_bytes):
     else:
         text = str(system)
 
-    messages = data.get("messages")
-    if text and isinstance(messages, list) and len(messages) > 0:
+    if text:
         msg = messages[0]
-        if isinstance(msg, dict) and msg.get("role") == "user":
+        if msg.get("role") == "user":
             c = msg.get("content", "")
             if isinstance(c, str):
                 msg["content"] = text + "\n\n" + c
             elif isinstance(c, list):
                 msg["content"] = [{"type": "text", "text": text + "\n\n"}] + c
             else:
-                data["messages"].insert(0, {"role": "user", "content": text})
+                messages.insert(0, {"role": "user", "content": text})
         else:
-            data["messages"].insert(0, {"role": "user", "content": text})
+            messages.insert(0, {"role": "user", "content": text})
 
     return (json.dumps(data).encode(), None)
 

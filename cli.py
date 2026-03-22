@@ -155,6 +155,8 @@ def cmd_login(provider_name=None):
     ok, msg = provider.login(auth_type)
     if ok:
         print(f"\n  ✓ {msg}")
+    elif "not independently verified" in msg or "could not verify" in msg:
+        print(f"\n  ? {msg}")
     else:
         print(f"\n  ✗ {msg}")
         sys.exit(1)
