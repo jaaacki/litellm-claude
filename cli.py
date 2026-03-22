@@ -446,6 +446,9 @@ def _add_model_first():
             sys.exit(1)
 
         catalog = ollama_provider.discover_models()
+        if catalog is None:
+            print("\n  Cannot reach Ollama. Check that it's running.")
+            sys.exit(1)
         model_name = input("\n  Model name: ").strip()
         if not model_name:
             print("  Cancelled.")
