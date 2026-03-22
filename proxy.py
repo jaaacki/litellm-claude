@@ -100,7 +100,7 @@ def _validate_messages(body_bytes):
         return "Request body must be a JSON object"
     messages = data.get("messages")
     if messages is None:
-        return None  # messages not required for all endpoints
+        return "messages field is required"
     if not isinstance(messages, list):
         return "messages field must be a list"
     for msg in messages:

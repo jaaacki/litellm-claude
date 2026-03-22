@@ -266,10 +266,15 @@ def _add_provider_first():
             if status != AuthStatus.OK:
                 print(f"\n  Need to authenticate with {provider.display_name}.")
                 ls, msg = provider.login(auth_type)
-                if ls not in (AuthStatus.OK, AuthStatus.UNVERIFIED):
+                if ls == AuthStatus.OK:
+                    print(f"  ✓ {msg}")
+                elif ls == AuthStatus.UNVERIFIED:
+                    print(f"  ? {msg}")
+                    print(f"  Aborting — cannot add models with unverified auth.")
+                    sys.exit(1)
+                else:
                     print(f"\n  ✗ {msg}")
                     sys.exit(1)
-                print(f"  ✓ {msg}")
 
         if auth_type and hasattr(provider, "get_models_for_auth"):
             catalog = provider.get_models_for_auth(auth_type)
@@ -460,10 +465,15 @@ def _add_model_first():
                     auth_type = provider.auth_types[0]
                 print(f"\n  Need to authenticate with {provider.display_name}.")
                 ls, msg = provider.login(auth_type)
-                if ls not in (AuthStatus.OK, AuthStatus.UNVERIFIED):
+                if ls == AuthStatus.OK:
+                    print(f"  ✓ {msg}")
+                elif ls == AuthStatus.UNVERIFIED:
+                    print(f"  ? {msg}")
+                    print(f"  Aborting — cannot add models with unverified auth.")
+                    sys.exit(1)
+                else:
                     print(f"\n  ✗ {msg}")
                     sys.exit(1)
-                print(f"  ✓ {msg}")
             else:
                 # Already authenticated — detect which auth type is active
                 auth_type = provider.detect_auth_type()
