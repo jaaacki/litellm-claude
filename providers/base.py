@@ -36,6 +36,7 @@ class Status(Enum):
 class BaseProvider(ABC):
     name: str = ""
     display_name: str = ""
+    supports_thinking: bool = False
 
     def __init__(self):
         # Instance-level copies to prevent mutable class-level sharing

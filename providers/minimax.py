@@ -6,6 +6,7 @@ from providers.base import BaseProvider, Status, is_placeholder
 class MiniMaxProvider(BaseProvider):
     name = "minimax"
     display_name = "MiniMax"
+    supports_thinking = True
     auth_types = ["api_key"]
     env_vars = {"api_key": ["MINIMAX_API_KEY"]}
     # Use openai/ prefix so LiteLLM translates via OpenAI-compatible endpoint

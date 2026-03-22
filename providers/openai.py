@@ -14,6 +14,7 @@ log = logging.getLogger("litellm-cli.openai")
 class OpenAIProvider(BaseProvider):
     name = "openai"
     display_name = "OpenAI"
+    supports_thinking = True
     auth_types = ["browser_oauth", "api_key"]
     _AUTH_LOG_PATTERN = re.compile(
         r"(?i)(successfully authenticated|chatgpt.*auth|session.*authenticated|access.token)"

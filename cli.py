@@ -683,11 +683,25 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             print("  Invalid choice.")
             sys.exit(1)
 
-    # Step 5: Read master key
+    # Step 5: Thinking effort (interactive if not passed and model supports it)
+    import providers as _providers
+    provider = _providers.get_provider(model["provider"])
+    if not thinking and provider and provider.supports_thinking:
+        print(f"\n  Thinking effort:\n")
+        print(f"    [1] low")
+        print(f"    [2] medium")
+        print(f"    [3] high")
+        print()
+        tc = input("  Choose (Enter for default): ").strip()
+        thinking_map = {"1": "low", "2": "medium", "3": "high"}
+        if tc in thinking_map:
+            thinking = thinking_map[tc]
+
+    # Step 6: Read master key
     master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
 
-    # Step 6: Launch
-    log.debug("Launching Claude Code: model=%s provider=%s", model["alias"], model["provider"])
+    # Step 7: Launch
+    log.debug("Launching Claude Code: model=%s provider=%s thinking=%s", model["alias"], model["provider"], thinking or "default")
     print(f"  Launching Claude Code ({model['alias']})...")
 
     os.environ["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}"
@@ -695,7 +709,6 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     os.environ["ANTHROPIC_MODEL"] = model["alias"]
     os.environ["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
     if thinking:
-        # Pass thinking effort to proxy via custom header
         os.environ["ANTHROPIC_CUSTOM_HEADERS"] = json.dumps({"x-thinking-effort": thinking})
         print(f"  Thinking effort: {thinking}")
     os.execvp(claude_bin, [claude_bin] + extra_args)
