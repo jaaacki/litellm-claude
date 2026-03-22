@@ -31,10 +31,8 @@ class AlibabaProvider(BaseProvider):
             if resp.status_code == 401:
                 return AuthStatus.INVALID, "Invalid DASHSCOPE_API_KEY"
             return AuthStatus.INVALID, f"DashScope returned status {resp.status_code}"
-        except requests.ConnectionError:
-            return AuthStatus.UNREACHABLE, "Cannot reach DashScope API"
-        except requests.Timeout:
-            return AuthStatus.UNREACHABLE, "DashScope API timed out"
+        except requests.RequestException as e:
+            return AuthStatus.UNREACHABLE, f"Cannot reach DashScope API: {e}"
 
     def login(self, auth_type="api_key"):
         print(f"\n  Enter your DashScope API key.")
