@@ -9,6 +9,20 @@ from providers.base import Status
 
 log = logging.getLogger("litellm-cli")
 
+_STATUS_ICON = {
+    Status.OK: "\u2713",
+    Status.UNVERIFIED: "?",
+    Status.NOT_CONFIGURED: "\u2717",
+    Status.UNREACHABLE: "\u2717",
+    Status.FAILED: "\u2717",
+    Status.INVALID: "\u2717",
+    Status.NOT_FOUND: "\u2717",
+}
+
+def _icon(status):
+    """Return a single-char icon for a Status value."""
+    return _STATUS_ICON.get(status, "\u2717")
+
 
 def _setup_logging(verbose=False):
     level = logging.DEBUG if verbose else logging.WARNING
@@ -102,20 +116,16 @@ def cmd_status():
             if m["provider"] not in auth_cache:
                 auth_cache[m["provider"]] = provider.validate()
             auth_status, _ = auth_cache[m["provider"]]
+            icon = _icon(auth_status)
             if auth_status == Status.OK:
-                icon = "\u2713"
                 label = "authenticated" if m["provider"] != "ollama" else "reachable"
             elif auth_status == Status.UNVERIFIED:
-                icon = "?"
                 label = "unverified"
             elif auth_status == Status.NOT_CONFIGURED:
-                icon = "\u2717"
                 label = "not configured"
             elif auth_status == Status.UNREACHABLE:
-                icon = "\u2717"
                 label = "unreachable"
             else:
-                icon = "\u2717"
                 label = "invalid"
         else:
             icon = "-"
@@ -150,8 +160,7 @@ def _ollama_interactive_login(provider):
     if choice.lower() == "y":
         print()
         s, msg = provider.ollama_cloud_login()
-        icon = "\u2713" if s == Status.OK else "\u2717"
-        print(f"  {icon} {msg}")
+        print(f"  {_icon(s)} {msg}")
 
     # Show available models
     models = provider.discover_models()
@@ -169,8 +178,7 @@ def _ollama_interactive_login(provider):
     if pull:
         print()
         ps, pull_msg = provider.pull_model(pull)
-        icon = "\u2713" if ps == Status.OK else "\u2717"
-        print(f"  {icon} {pull_msg}")
+        print(f"  {_icon(ps)} {pull_msg}")
 
 
 def _choose_auth_type(provider):
@@ -194,12 +202,7 @@ def _choose_auth_type(provider):
 
 def _print_login_result(login_status, msg):
     """Print login result with status icon. Returns the status for caller control flow."""
-    if login_status == Status.OK:
-        print(f"\n  \u2713 {msg}")
-    elif login_status == Status.UNVERIFIED:
-        print(f"\n  ? {msg}")
-    else:
-        print(f"\n  \u2717 {msg}")
+    print(f"\n  {_icon(login_status)} {msg}")
     return login_status
 
 
@@ -316,8 +319,7 @@ def cmd_provider_login(provider_flag=None, model_flag=None, extra_args=None):
     # Providers with no auth_types (e.g. Ollama)
     if len(provider.auth_types) == 0:
         ls, msg = provider.login()
-        icon = "\u2713" if ls == Status.OK else "?" if ls == Status.UNVERIFIED else "\u2717"
-        print(f"  {icon} {msg}")
+        print(f"  {_icon(ls)} {msg}")
         if provider.name == "ollama" and ls == Status.OK:
             _ollama_interactive_login(provider)
         return
@@ -334,6 +336,12 @@ def cmd_provider_login(provider_flag=None, model_flag=None, extra_args=None):
     result = _print_login_result(*provider.login(auth_type, credentials=credentials))
     if result not in (Status.OK, Status.UNVERIFIED):
         sys.exit(1)
+
+    # Restart container so it picks up the new .env credentials
+    import container
+    cs, _ = container.status()
+    if cs == Status.OK:
+        _restart_and_report("provider login", provider=provider)
 
 
 def cmd_provider_logout(provider_flag=None, model_flag=None, extra_args=None):
