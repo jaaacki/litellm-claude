@@ -1266,6 +1266,11 @@ class Handler(BaseHTTPRequestHandler):
                         continue
 
                     # Check for mid-stream error from upstream
+                    # ACCEPTED DEBT: Anthropic SSE has no mid-stream error event type.
+                    # We inject the error as assistant text + end_turn so Claude Code
+                    # sees what went wrong, rather than hard-closing (blind retries)
+                    # or emitting non-standard events (parse errors). The downstream
+                    # sees HTTP 200 + end_turn, not a failure signal.
                     if "error" in chunk:
                         err = chunk["error"]
                         err_msg = err.get("message", "Unknown upstream error") if isinstance(err, dict) else str(err)
