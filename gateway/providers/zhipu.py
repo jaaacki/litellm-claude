@@ -30,6 +30,11 @@ class ZhipuProvider(BaseProvider):
         """Extra litellm_params for Zhipu models."""
         return {"api_base": self.API_BASE, "api_key": "os.environ/ZAI_API_KEY"}
 
+    def resolve_thinking_contract(self, alias, litellm_model, litellm_params=None):
+        if litellm_model.startswith("openai/"):
+            return self._openai_reasoning_contract("openai")
+        return None
+
     def validate(self):
         api_key = config.get_env("ZAI_API_KEY")
         if not api_key or is_placeholder(api_key):

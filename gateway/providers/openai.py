@@ -66,6 +66,13 @@ class OpenAIProvider(BaseProvider):
             return self._api_key_models
         return self.models
 
+    def resolve_thinking_contract(self, alias, litellm_model, litellm_params=None):
+        if litellm_model.startswith("chatgpt/"):
+            return self._openai_reasoning_contract("chatgpt")
+        if litellm_model.startswith("openai/"):
+            return self._openai_reasoning_contract("openai")
+        return None
+
     def validate(self):
         # Check API key first
         api_key = config.get_env("OPENAI_API_KEY")

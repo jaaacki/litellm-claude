@@ -29,6 +29,11 @@ class MiniMaxProvider(BaseProvider):
         """Extra litellm_params for MiniMax models."""
         return {"api_base": f"{self.API_BASE}/v1", "api_key": "os.environ/MINIMAX_API_KEY"}
 
+    def resolve_thinking_contract(self, alias, litellm_model, litellm_params=None):
+        if litellm_model.startswith("openai/"):
+            return self._openai_reasoning_contract("openai")
+        return None
+
     # LiteLLM appends /v1/ internally, so no trailing /v1 here
     API_BASE = "https://api.minimax.io"
 

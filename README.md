@@ -69,6 +69,12 @@ cd litellm-claude
 ./proclaude.sh launch claude   # Launch Claude Code through the proxy
 ```
 
+Thinking levels are now strict:
+
+- `--thinking low|medium|high` is accepted only for models whose configured upstream route has a verified thinking contract
+- unsupported or unverified models hard-fail instead of silently degrading
+- future models inherit thinking support automatically when their configured provider route matches a verified contract
+
 Flags skip interactive prompts:
 
 ```bash

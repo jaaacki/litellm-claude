@@ -85,7 +85,12 @@ def list_models():
         params = entry.get("litellm_params", {})
         model = params.get("model", "")
         provider = _provider_from_model(model, params)
-        results.append({"alias": alias, "model": model, "provider": provider})
+        results.append({
+            "alias": alias,
+            "model": model,
+            "provider": provider,
+            "litellm_params": dict(params),
+        })
     return results
 
 
@@ -157,6 +162,37 @@ def provider_has_models(provider_name):
         if m["provider"] == provider_name:
             return True
     return False
+
+
+def resolve_thinking_contract(model_entry):
+    """Resolve the verified thinking contract for a configured model, or None."""
+    if not model_entry:
+        return None
+
+    litellm_params = dict(model_entry.get("litellm_params", {}) or {})
+    litellm_model = model_entry.get("model") or litellm_params.get("model", "")
+    if not litellm_model:
+        return None
+
+    provider_name = model_entry.get("provider") or _provider_from_model(litellm_model, litellm_params)
+    if not provider_name:
+        return None
+
+    import providers
+
+    provider = providers.get_provider(provider_name)
+    if not provider:
+        return None
+
+    alias = model_entry.get("alias") or model_entry.get("model_name") or ""
+    contract = provider.resolve_thinking_contract(alias, litellm_model, litellm_params)
+    if not isinstance(contract, dict):
+        return None
+
+    resolved = dict(contract)
+    resolved.setdefault("provider", provider.name)
+    resolved.setdefault("levels", tuple(getattr(provider, "thinking_levels", ())))
+    return resolved
 
 
 # --- .env helpers ---

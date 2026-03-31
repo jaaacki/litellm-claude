@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from enum import Enum
 
+THINKING_LEVELS = ("low", "medium", "high")
+
 
 def is_placeholder(value):
     """Detect common placeholder values from .env.example files."""
@@ -37,6 +39,7 @@ class BaseProvider(ABC):
     name: str = ""
     display_name: str = ""
     supports_thinking: bool = False
+    thinking_levels = THINKING_LEVELS
     anthropic_base_url: str = None  # Native Anthropic-compatible endpoint (bypasses LiteLLM)
     native_auth: dict = None  # {"header": "x-api-key", "env": "MINIMAX_API_KEY"} — how proxy.py authenticates native forwarding
     # Per-model token limits: {alias: {"context": int, "max_output": int}}
@@ -91,3 +94,17 @@ class BaseProvider(ABC):
             if not env_var_list:
                 return auth_type
         return self.auth_types[0] if self.auth_types else None
+
+    def resolve_thinking_contract(self, alias, litellm_model, litellm_params=None):
+        """Return a verified thinking contract dict for a configured model, or None."""
+        return None
+
+    def _openai_reasoning_contract(self, route_family):
+        """Thinking contract for OpenAI-compatible chat/completions routes."""
+        return {
+            "provider": self.name,
+            "strategy": "openai_chat_reasoning_effort",
+            "route_family": route_family,
+            "levels": self.thinking_levels,
+            "requires_openai_translation": True,
+        }

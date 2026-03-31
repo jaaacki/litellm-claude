@@ -252,21 +252,17 @@ _OPENAI_TRANSLATED_MODELS = None
 _ALL_CONFIGURED_MODELS = None
 # Cache: model_name -> (host, base_path, api_key_env_var) for native Anthropic forwarding
 _NATIVE_ANTHROPIC_MODELS = None
+# Cache: model_name -> verified thinking contract
+_THINKING_CONTRACTS = None
 
-def _load_translated_models():
-    """Load model routing tables from config + provider registry.
 
-    Populates three caches:
-    - _ALL_CONFIGURED_MODELS: ordered list of model names (first = default fallback)
-    - _OPENAI_TRANSLATED_MODELS: set of models needing Anthropic→OpenAI translation
-    - _NATIVE_ANTHROPIC_MODELS: dict of models with native Anthropic endpoints
-    Called once at startup, cached for all subsequent requests."""
-    global _OPENAI_TRANSLATED_MODELS, _ALL_CONFIGURED_MODELS, _NATIVE_ANTHROPIC_MODELS
+def _build_route_state(entries):
+    """Build cached routing and thinking state from config model entries."""
     translated = set()
-    all_models = []  # ordered list, first model is the default fallback
-    native = {}  # model_name -> {"url": parsed, "api_key_env": str}
+    all_models = []
+    native = {}
+    thinking_contracts = {}
 
-    # Build provider lookup: model_name -> provider instance
     provider_for_model = {}
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -278,39 +274,81 @@ def _load_translated_models():
     except Exception as e:
         log.warning("Could not load providers for native routing: %s", e)
 
+    import config as cfg
+
+    for entry in entries:
+        name = entry.get("model_name", "")
+        if not name:
+            continue
+
+        all_models.append(name)
+        litellm_params = dict(entry.get("litellm_params", {}) or {})
+        litellm_model = litellm_params.get("model", "")
+        provider_name = cfg._provider_from_model(litellm_model, litellm_params)
+        model_entry = {
+            "alias": name,
+            "model": litellm_model,
+            "provider": provider_name,
+            "litellm_params": litellm_params,
+        }
+        thinking_contract = cfg.resolve_thinking_contract(model_entry)
+        if thinking_contract:
+            thinking_contracts[name] = thinking_contract
+            if thinking_contract.get("requires_openai_translation"):
+                translated.add(name)
+
+        if name in provider_for_model:
+            p = provider_for_model[name]
+            if not p.native_auth:
+                log.warning("Provider %s has anthropic_base_url but no native_auth — skipping native route", p.name)
+                continue
+            api_key_env = p.native_auth.get("env")
+            auth_header = p.native_auth.get("header", "x-api-key")
+            parsed = urllib.parse.urlparse(p.anthropic_base_url)
+            native[name] = {"host": parsed.hostname, "port": parsed.port or 443,
+                            "path": parsed.path.rstrip("/"), "api_key_env": api_key_env,
+                            "auth_header": auth_header}
+            log.info("Native Anthropic route: %s → %s", name, p.anthropic_base_url)
+
+    return {
+        "translated": translated,
+        "all_models": all_models,
+        "native": native,
+        "thinking_contracts": thinking_contracts,
+    }
+
+def _load_translated_models():
+    """Load model routing tables from config + provider registry.
+
+    Populates three caches:
+    - _ALL_CONFIGURED_MODELS: ordered list of model names (first = default fallback)
+    - _OPENAI_TRANSLATED_MODELS: set of models needing Anthropic→OpenAI translation
+    - _NATIVE_ANTHROPIC_MODELS: dict of models with native Anthropic endpoints
+    Called once at startup, cached for all subsequent requests."""
+    global _OPENAI_TRANSLATED_MODELS, _ALL_CONFIGURED_MODELS, _NATIVE_ANTHROPIC_MODELS, _THINKING_CONTRACTS
+
     try:
         import yaml
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "litellm_config.yaml")
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
-        for entry in cfg.get("model_list", []):
-            name = entry.get("model_name", "")
-            all_models.append(name)
-            litellm_model = entry.get("litellm_params", {}).get("model", "")
-
-            # Check if this model's provider has a native Anthropic endpoint
-            if name in provider_for_model:
-                p = provider_for_model[name]
-                if not p.native_auth:
-                    log.warning("Provider %s has anthropic_base_url but no native_auth — skipping native route", p.name)
-                    continue
-                api_key_env = p.native_auth.get("env")
-                auth_header = p.native_auth.get("header", "x-api-key")
-                parsed = urllib.parse.urlparse(p.anthropic_base_url)
-                native[name] = {"host": parsed.hostname, "port": parsed.port or 443,
-                                "path": parsed.path.rstrip("/"), "api_key_env": api_key_env,
-                                "auth_header": auth_header}
-                log.info("Native Anthropic route: %s → %s", name, p.anthropic_base_url)
-            elif litellm_model.startswith("openai/"):
-                translated.add(name)
+        route_state = _build_route_state(cfg.get("model_list", []))
     except Exception as e:
         log.warning("Failed to load litellm_config.yaml: %s — model routing disabled", e)
-    _OPENAI_TRANSLATED_MODELS = translated
-    _ALL_CONFIGURED_MODELS = all_models
-    _NATIVE_ANTHROPIC_MODELS = native
-    log.debug("Models needing OpenAI translation: %s", translated)
-    log.debug("Native Anthropic models: %s", list(native.keys()))
-    log.debug("All configured models (ordered): %s", all_models)
+        route_state = {
+            "translated": set(),
+            "all_models": [],
+            "native": {},
+            "thinking_contracts": {},
+        }
+    _OPENAI_TRANSLATED_MODELS = route_state["translated"]
+    _ALL_CONFIGURED_MODELS = route_state["all_models"]
+    _NATIVE_ANTHROPIC_MODELS = route_state["native"]
+    _THINKING_CONTRACTS = route_state["thinking_contracts"]
+    log.debug("Models needing OpenAI translation: %s", _OPENAI_TRANSLATED_MODELS)
+    log.debug("Native Anthropic models: %s", list(_NATIVE_ANTHROPIC_MODELS.keys()))
+    log.debug("All configured models (ordered): %s", _ALL_CONFIGURED_MODELS)
+    log.debug("Thinking contracts: %s", sorted(_THINKING_CONTRACTS.keys()))
 
 
 def _remap_model_if_needed(body_json):
@@ -355,7 +393,39 @@ def _needs_openai_translation(body_json):
     return body_json.get("model", "") in _OPENAI_TRANSLATED_MODELS
 
 
-def _anthropic_to_openai(body_json, thinking_effort=None):
+def _require_verified_thinking_contract(model_name, thinking_effort, thinking_contracts=None):
+    """Return the verified thinking contract for the request or raise ValueError."""
+    if not thinking_effort:
+        return None
+    contracts = _THINKING_CONTRACTS if thinking_contracts is None else thinking_contracts
+    contract = (contracts or {}).get(model_name)
+    if not contract:
+        raise ValueError(
+            "Thinking effort is not supported for model '%s'. "
+            "The configured upstream route is not verified." % model_name
+        )
+    if thinking_effort not in contract.get("levels", ()):
+        raise ValueError("Invalid thinking effort: %s" % thinking_effort)
+    return contract
+
+
+def _apply_verified_thinking_contract(openai_body, thinking_contract, thinking_effort):
+    """Inject the upstream thinking control field for a verified contract."""
+    if not thinking_effort or not thinking_contract:
+        return openai_body
+
+    strategy = thinking_contract.get("strategy")
+    if strategy == "openai_chat_reasoning_effort":
+        openai_body["reasoning_effort"] = thinking_effort
+        return openai_body
+
+    raise ValueError(
+        "Unsupported thinking strategy '%s' for provider '%s'"
+        % (strategy, thinking_contract.get("provider", "unknown"))
+    )
+
+
+def _anthropic_to_openai(body_json, thinking_effort=None, thinking_contract=None):
     """Convert Anthropic /v1/messages request to OpenAI /v1/chat/completions format.
 
     Handles: system messages, text content, tool definitions, tool_use (assistant),
@@ -509,9 +579,8 @@ def _anthropic_to_openai(body_json, thinking_effort=None):
         openai_body["stream"] = True
         openai_body["stream_options"] = {"include_usage": True}
 
-    # Inject thinking/reasoning effort if set
-    if thinking_effort:
-        openai_body["reasoning_effort"] = thinking_effort
+    # Inject thinking/reasoning effort if set and verified
+    _apply_verified_thinking_contract(openai_body, thinking_contract, thinking_effort)
 
     # Convert Anthropic tools → OpenAI tools
     tools = data.get("tools")
@@ -777,19 +846,31 @@ class Handler(BaseHTTPRequestHandler):
             # Remap unconfigured models to a configured fallback
             # (Claude Code sends background requests to claude-haiku which isn't configured)
             body_json = _remap_model_if_needed(body_json)
+            thinking = self.headers.get("x-thinking-effort")
+            thinking_contract = None
+            if isinstance(body_json, dict):
+                model_name = body_json.get("model", "")
+                try:
+                    thinking_contract = _require_verified_thinking_contract(model_name, thinking)
+                except ValueError as e:
+                    _inc_counter("invalid_request")
+                    self._send_error(400, str(e), "validation_error")
+                    return
             # Check routing: native Anthropic endpoint > OpenAI translation > LiteLLM passthrough
             native_route = _get_native_route(body_json)
             if native_route:
                 log.debug("Native Anthropic route for %s", self.path)
             elif _needs_openai_translation(body_json):
-                # Read thinking effort from custom header
-                thinking = self.headers.get("x-thinking-effort")
                 # Capture stream flag BEFORE translation nullifies body_json
                 _is_stream = body_json.get("stream", False) if isinstance(body_json, dict) else False
                 # Capture model name for circuit breaker before translation clears body_json
                 _circuit_key = body_json.get("model", "") if isinstance(body_json, dict) else ""
-                # Rewrite Anthropic request to OpenAI format for openai/ models
-                body = _anthropic_to_openai(body_json, thinking_effort=thinking)
+                # Rewrite Anthropic request to OpenAI format for verified OpenAI-compatible routes
+                body = _anthropic_to_openai(
+                    body_json,
+                    thinking_effort=thinking,
+                    thinking_contract=thinking_contract,
+                )
                 body_json = None
                 self.path = "/v1/chat/completions"
                 translate_response = True

@@ -695,10 +695,14 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             out("  Invalid choice.")
             sys.exit(1)
 
-    # Step 5: Thinking effort (interactive if not passed and model supports it)
-    import providers as _providers
-    provider = _providers.get_provider(model["provider"])
-    if not thinking and provider and provider.supports_thinking:
+    # Step 5: Thinking effort (interactive if the selected model has a verified contract)
+    thinking_contract = config.resolve_thinking_contract(model)
+    if thinking and not thinking_contract:
+        out(f"  ✗ Thinking effort is not supported for model '{model['alias']}'.")
+        out("    The configured upstream route is not verified for thinking control.")
+        sys.exit(1)
+
+    if not thinking and thinking_contract:
         out(f"\n  Thinking effort:\n")
         out(f"    [1] low")
         out(f"    [2] medium")
