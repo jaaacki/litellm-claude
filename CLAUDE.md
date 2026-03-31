@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A configuration-only deployment repo for a [LiteLLM](https://github.com/BerryAI/litellm) proxy server, providing a unified API gateway to multiple LLM providers. The CLI (`litellm.sh`) is a Python-based control plane behind a thin bash wrapper.
+A configuration-only deployment repo for a [LiteLLM](https://github.com/BerryAI/litellm) proxy server, providing a unified API gateway to multiple LLM providers. The CLI (`proclaude.sh`) is a Python-based control plane behind a thin bash wrapper.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ The codebase enforces strict layer boundaries for error handling, logging, and I
 - **proxy.py** (HTTP boundary) — uses `logging` module exclusively. Translates internal errors to HTTP JSON envelopes (`_error_response()`). Typed exception handlers map to HTTP status codes (504 timeout, 502 refused/error). One thread safety-net catch with `exc_info=True` traceback. No `print()`.
 - **config.py, container.py, providers/** (library layer) — return `(Status, str)` tuples using the unified `Status` enum (`providers/base.py`). No `sys.exit()`. No `print()` except two streaming methods that can't batch-return progress: `openai._login_browser()` and `ollama.pull_model()`. Exceptions either propagate (e.g. `DockerNotFoundError`) or are caught and returned as status.
 - **cli.py** (CLI boundary) — owns all user-facing output (`print()`), interactive prompting (`input()`), and process exit (`sys.exit()`). Translates `Status` returns to icons and messages. Catches `DockerNotFoundError` at the top level.
-- **litellm.sh** (shell boundary) — delegates .env parsing to `config.load_env_file()` via Python. Translates exit codes to user messages.
+- **proclaude.sh** (shell boundary) — delegates .env parsing to `config.load_env_file()` via Python. Translates exit codes to user messages.
 
 ### Error Contract
 
@@ -50,7 +50,7 @@ class Status(Enum):
 One canonical parser: `config.load_env_file()`. All consumers route through it:
 - `config.py` — uses it directly for `get_env()`, `set_env()`, `remove_env()`
 - `container.py` — imports `load_env_file` from config for proxy env overlay
-- `litellm.sh` — calls `load_env_file()` via Python to export vars to host env
+- `proclaude.sh` — calls `load_env_file()` via Python to export vars to host env
 
 Format contract: skip blank/comment lines, split on first `=`, strip matching quote pairs.
 
@@ -61,7 +61,7 @@ Format contract: skip blank/comment lines, split on first `=`, strip matching qu
 - **Exception**: `_print_counters()` atexit handler in proxy.py uses `print` (logging may be torn down).
 
 Key files:
-- **litellm.sh** — thin bash wrapper: manages `.venv/`, loads `.env` via Python, forwards to `cli.py`
+- **proclaude.sh** — thin bash wrapper: manages `.venv/`, loads `.env` via Python, forwards to `cli.py`
 - **cli.py** — main CLI entry point (argument routing, interactive wizards, all user I/O)
 - **config.py** — reads/writes `litellm_config.yaml` and `.env` (atomic writes with backups, canonical `.env` parser)
 - **container.py** — Docker container lifecycle + proxy.py process management
@@ -78,22 +78,22 @@ Key files:
 All operations go through the CLI wrapper:
 
 ```bash
-./litellm.sh start           # Start proxy (port 2555)
-./litellm.sh stop            # Stop and remove container
-./litellm.sh restart         # Restart container (force-recreate to pick up .env/config changes)
-./litellm.sh status          # Container status + per-model auth status
-./litellm.sh logs            # Stream container logs (follow mode)
+./proclaude.sh start           # Start proxy (port 2555)
+./proclaude.sh stop            # Stop and remove container
+./proclaude.sh restart         # Restart container (force-recreate to pick up .env/config changes)
+./proclaude.sh status          # Container status + per-model auth status
+./proclaude.sh logs            # Stream container logs (follow mode)
 
-./litellm.sh model add       # Add models (interactive, pick provider first)
-./litellm.sh model rm        # Remove configured models
-./litellm.sh model list      # List configured models
+./proclaude.sh model add       # Add models (interactive, pick provider first)
+./proclaude.sh model rm        # Remove configured models
+./proclaude.sh model list      # List configured models
 
-./litellm.sh provider list   # Show available providers
-./litellm.sh provider status # Show auth status per provider
-./litellm.sh provider login  # Authenticate with a provider
-./litellm.sh provider logout # Remove provider credentials
+./proclaude.sh provider list   # Show available providers
+./proclaude.sh provider status # Show auth status per provider
+./proclaude.sh provider login  # Authenticate with a provider
+./proclaude.sh provider logout # Remove provider credentials
 
-./litellm.sh launch claude   # Launch Claude Code through the proxy
+./proclaude.sh launch claude   # Launch Claude Code through the proxy
 ```
 
 ## Provider System
@@ -124,7 +124,7 @@ Registered in `providers/__init__.py` via `_register()` — order matters for di
 
 - Container image: `ghcr.io/berriai/litellm:main-v1.82.4-nightly`
 - Master key for proxy auth: set via `LITELLM_MASTER_KEY` in `.env` (default: `sk-1234`)
-- Python deps: `pyyaml`, `requests` (managed in `.venv/`, auto-created by litellm.sh)
+- Python deps: `pyyaml`, `requests` (managed in `.venv/`, auto-created by proclaude.sh)
 - Config writes are atomic (temp file + rename) with `.bak` backups
 - `container.restart()` uses `--force-recreate` to pick up `.env`/config changes; returns `(Status.FAILED, msg)` if proxy fails
 - `container.up()` also starts proxy.py; `container.down()` stops it (PID file at `.proxy.pid`, log at `.proxy.log`). Returns `Status.FAILED` if either container or proxy fails.

@@ -22,16 +22,16 @@ git clone https://github.com/jaaacki/litellm-claude.git
 cd litellm-claude
 
 # 2. Login to a provider
-./litellm.sh provider login openai
+./proclaude.sh provider login openai
 
 # 3. Add a model
-./litellm.sh model add
+./proclaude.sh model add
 
 # 4. Start the proxy
-./litellm.sh start
+./proclaude.sh start
 
 # 5. Launch Claude Code
-./litellm.sh launch claude
+./proclaude.sh launch claude
 ```
 
 ## CLI Reference
@@ -39,41 +39,41 @@ cd litellm-claude
 ### Infrastructure
 
 ```bash
-./litellm.sh start           # Start proxy container (port 2555)
-./litellm.sh stop            # Stop and remove container
-./litellm.sh restart         # Restart container
-./litellm.sh status          # Container + per-model auth status
-./litellm.sh logs            # Stream container logs
+./proclaude.sh start           # Start proxy container (port 2555)
+./proclaude.sh stop            # Stop and remove container
+./proclaude.sh restart         # Restart container
+./proclaude.sh status          # Container + per-model auth status
+./proclaude.sh logs            # Stream container logs
 ```
 
 ### Models
 
 ```bash
-./litellm.sh model add       # Add models (interactive, pick provider first)
-./litellm.sh model rm        # Remove configured models
-./litellm.sh model list      # List configured models
+./proclaude.sh model add       # Add models (interactive, pick provider first)
+./proclaude.sh model rm        # Remove configured models
+./proclaude.sh model list      # List configured models
 ```
 
 ### Providers
 
 ```bash
-./litellm.sh provider list   # Show available providers
-./litellm.sh provider status # Show auth status for all providers
-./litellm.sh provider login  # Authenticate with a provider
-./litellm.sh provider logout # Remove provider credentials
+./proclaude.sh provider list   # Show available providers
+./proclaude.sh provider status # Show auth status for all providers
+./proclaude.sh provider login  # Authenticate with a provider
+./proclaude.sh provider logout # Remove provider credentials
 ```
 
 ### Launch
 
 ```bash
-./litellm.sh launch claude   # Launch Claude Code through the proxy
+./proclaude.sh launch claude   # Launch Claude Code through the proxy
 ```
 
 Flags skip interactive prompts:
 
 ```bash
-./litellm.sh launch claude --provider openai --model gpt-5.4
-./litellm.sh model list --provider ollama
+./proclaude.sh launch claude --provider openai --model gpt-5.4
+./proclaude.sh model list --provider ollama
 ```
 
 ## Provider Setup
@@ -81,7 +81,7 @@ Flags skip interactive prompts:
 ### OpenAI
 
 ```bash
-./litellm.sh provider login openai
+./proclaude.sh provider login openai
 # Choose: [1] Browser OAuth  [2] API Key
 ```
 
@@ -90,7 +90,7 @@ Browser login opens the OpenAI OAuth flow. API key is stored in `.env`.
 ### MiniMax
 
 ```bash
-./litellm.sh provider login minimax
+./proclaude.sh provider login minimax
 # Enter your MiniMax API key
 ```
 
@@ -103,11 +103,11 @@ Ollama runs locally — no API keys needed for local models.
 ollama serve
 
 # Login for cloud models (optional)
-./litellm.sh provider login ollama
+./proclaude.sh provider login ollama
 # → Offers: ollama login, list models, pull models
 
 # Or add models directly
-./litellm.sh model add --provider ollama
+./proclaude.sh model add --provider ollama
 # → Choose from discovered models or enter name manually
 ```
 
@@ -118,7 +118,7 @@ Cloud models (e.g. `glm-5:cloud`, `kimi-k2.5:cloud`) appear automatically after 
 The proxy runs as a Docker container with [LiteLLM](https://github.com/BerryAI/litellm), which translates between API formats. Claude Code connects to `localhost:2555`, which routes to the configured provider.
 
 ```
-litellm.sh          Thin bash wrapper — manages .venv, forwards to cli.py
+proclaude.sh          Thin bash wrapper — manages .venv, forwards to cli.py
 cli.py              Main CLI — argument routing, interactive wizards
 config.py           Reads/writes litellm_config.yaml and .env
 container.py        Docker container lifecycle

@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -6,6 +9,25 @@ from providers.base import Status
 
 
 class LaunchClaudeModelSelectionTests(unittest.TestCase):
+    def test_proclaude_launcher_exists(self):
+        self.assertTrue(os.path.exists("/Users/noonoon/Dev/liteLLM/proclaude.sh"))
+
+    def test_proclaude_runs_without_changing_calling_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zsh_command = (
+                'source /Users/noonoon/.zshrc >/dev/null 2>&1; '
+                'proclaude --emit-env /tmp/proclaude-test-env >/tmp/proclaude.out 2>/tmp/proclaude.err || true; '
+                'pwd'
+            )
+            result = subprocess.run(
+                ["zsh", "-ic", zsh_command],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(os.path.realpath(tmpdir), os.path.realpath(result.stdout.strip()))
+
     @mock.patch("cli.input", side_effect=["1", "n"])
     @mock.patch("cli.os.execvp", side_effect=SystemExit(0))
     @mock.patch("shutil.which", return_value="/usr/local/bin/claude")

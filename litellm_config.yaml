@@ -5,10 +5,6 @@ model_list:
     drop_params: true
     modify_params: true
     supports_system_messages: false
-- model_name: llama3
-  litellm_params:
-    model: ollama/llama3
-    api_base: http://host.docker.internal:11434
 - model_name: MiniMax-M2.7
   litellm_params:
     model: openai/MiniMax-M2.7

@@ -37,7 +37,7 @@ def _eprint(*args, **kwargs):
 
 
 def show_help():
-    name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./litellm.sh")
+    name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./proclaude.sh")
     print("LiteLLM Gateway CLI")
     print(f"Usage: {name} <command> [options]")
     print()
@@ -82,7 +82,7 @@ SUBCOMMAND_REGISTRY = {
 
 def _show_group_help(group):
     """Print subcommand help for a command group."""
-    name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./litellm.sh")
+    name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./proclaude.sh")
     entries = SUBCOMMAND_REGISTRY.get(group)
     if not entries:
         return
@@ -207,7 +207,7 @@ def _restart_and_report(context_msg, provider=None, added=None):
         status, msg = provider.validate()
         if status == Status.OK:
             print(f"  {_icon(status)} {msg}")
-    print(f"  Restart to apply: ./litellm.sh restart")
+    print(f"  Restart to apply: ./proclaude.sh restart")
 
 
 def _ollama_manual_input(provider, catalog):
@@ -350,7 +350,7 @@ def cmd_provider_logout(provider_flag=None, model_flag=None, extra_args=None):
     if not env_vars_for_auth:
         # Browser OAuth or no env vars -- can't clear programmatically
         print(f"  {provider.display_name} browser OAuth credentials are managed by the container.")
-        print(f"  Restart with './litellm.sh restart' to reset.")
+        print(f"  Restart with './proclaude.sh restart' to reset.")
         return
 
     confirm = input(
@@ -425,7 +425,7 @@ def cmd_model_add(provider_flag=None, model_flag=None, extra_args=None):
         status, msg = provider.validate()
         if status not in (Status.OK, Status.UNVERIFIED):
             print(f"\n  \u2717 {provider.display_name} is not authenticated.")
-            print(f"    Run: ./litellm.sh provider login {provider.name}")
+            print(f"    Run: ./proclaude.sh provider login {provider.name}")
             sys.exit(1)
 
         auth_type = provider.detect_auth_type()
@@ -511,7 +511,7 @@ def cmd_model_add(provider_flag=None, model_flag=None, extra_args=None):
     if cs == Status.OK:
         _restart_and_report("adding models", provider=provider, added=added)
     else:
-        print(f"\n  Added: {', '.join(added)}. Start the proxy with './litellm.sh start'.")
+        print(f"\n  Added: {', '.join(added)}. Start the proxy with './proclaude.sh start'.")
 
 
 def cmd_model_rm(provider_flag=None, model_flag=None, extra_args=None):
@@ -619,8 +619,8 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     if not emit_env:
         # Detect if running inside container (claude binary won't be here)
         if os.environ.get("PROXY_LITELLM_HOST"):
-            print("  \u2717 'launch claude' must be run via ./litellm.sh on the host")
-            print("    Run: ./litellm.sh launch claude")
+            print("  \u2717 'launch claude' must be run via ./proclaude.sh on the host")
+            print("    Run: ./proclaude.sh launch claude")
             sys.exit(1)
         claude_bin = shutil.which("claude")
         if not claude_bin:
@@ -639,7 +639,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
 
     if not configured_models:
         out("  \u2717 No models configured.")
-        out("    Run: ./litellm.sh model add")
+        out("    Run: ./proclaude.sh model add")
         sys.exit(1)
 
     # Hide configured Ollama entries that are not currently available locally.
@@ -670,7 +670,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
 
     if not candidates:
         out("  \u2717 No launchable models configured.")
-        out("    Run: ./litellm.sh model add")
+        out("    Run: ./proclaude.sh model add")
         sys.exit(1)
 
     # Filter by model flag if given
@@ -725,7 +725,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     log.debug("Launching Claude Code: model=%s provider=%s thinking=%s telegram=%s",
               model["alias"], model["provider"], thinking or "default", telegram)
 
-    # Check for --emit-env mode (used by litellm.sh to get env without exec'ing)
+    # Check for --emit-env mode (used by proclaude.sh to get env without exec'ing)
     if emit_env:
         with open(emit_env, "w") as f:
             f.write(f"export ANTHROPIC_BASE_URL='http://localhost:{PORT}'\n")
@@ -831,10 +831,10 @@ def main():
     rest = args[1:]
     log.debug("Executing command: %s %s", cmd, rest)
 
-    # --- Infrastructure commands redirected to litellm.sh ---
+    # --- Infrastructure commands redirected to proclaude.sh ---
     if cmd in ("start", "stop", "restart", "logs"):
-        print(f"  '{cmd}' is handled by litellm.sh directly.")
-        print(f"  Run: ./litellm.sh {cmd}")
+        print(f"  '{cmd}' is handled by proclaude.sh directly.")
+        print(f"  Run: ./proclaude.sh {cmd}")
         return
 
     if cmd == "status":

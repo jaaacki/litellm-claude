@@ -810,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(503, "Provider temporarily unavailable (circuit open)", "upstream_error")
             return
 
-        # Get API key from environment (loaded by litellm.sh from .env)
+        # Get API key from environment (loaded by proclaude.sh from .env)
         api_key = os.environ.get(api_key_env, "") if api_key_env else None
         if not api_key:
             log.error("Native forward: no API key for model %s", model_name)

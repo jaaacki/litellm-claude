@@ -12,7 +12,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger("litellm-cli.config")
 ENV_WRITE_ERROR = (
     "Cannot update .env from inside the gateway container. "
-    "Run `./litellm.sh` from the host, or edit .env manually and restart."
+    "Run `./proclaude.sh` from the host, or edit .env manually and restart."
 )
 CONFIG_PATH = os.path.join(DIR, "litellm_config.yaml")
 CONFIG_BACKUP = CONFIG_PATH + ".bak"

@@ -1,7 +1,7 @@
 """Container status utilities.
 
 When running inside the gateway container, status checks use direct HTTP
-to the litellm service. Docker lifecycle is managed by litellm.sh on the host.
+to the litellm service. Docker lifecycle is managed by proclaude.sh on the host.
 """
 import logging
 import os
@@ -35,7 +35,7 @@ def status():
 def get_logs_tail(lines=200):
     """Get recent container logs. Returns empty string inside container.
 
-    Logs are accessed via './litellm.sh logs' from the host.
+    Logs are accessed via './proclaude.sh logs' from the host.
     """
     return ""
 
@@ -46,9 +46,9 @@ def get_logs_since(timestamp):
 
 
 def up():
-    """Stub — container lifecycle is managed by litellm.sh on the host."""
-    log.warning("container.up() called inside container — lifecycle managed by litellm.sh")
-    return Status.FAILED, "Start services with './litellm.sh start' on the host"
+    """Stub — container lifecycle is managed by proclaude.sh on the host."""
+    log.warning("container.up() called inside container — lifecycle managed by proclaude.sh")
+    return Status.FAILED, "Start services with './proclaude.sh start' on the host"
 
 
 def wait_healthy(timeout=30):
@@ -64,4 +64,4 @@ def wait_healthy(timeout=30):
 
 def logs():
     """Direct user to host-side log access. Returns (Status, message)."""
-    return Status.FAILED, "View logs from host: ./litellm.sh logs"
+    return Status.FAILED, "View logs from host: ./proclaude.sh logs"

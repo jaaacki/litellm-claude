@@ -126,7 +126,7 @@ class OpenAIProvider(BaseProvider):
                 return Status.UNREACHABLE, f"Cannot verify browser auth (proxy check failed: {err})"
 
         log.debug("No auth evidence found")
-        return Status.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './litellm.sh login openai' to authenticate."
+        return Status.NOT_CONFIGURED, "Not authenticated — no browser OAuth evidence found. Run './proclaude.sh login openai' to authenticate."
 
     def _check_proxy_models(self, chatgpt_aliases):
         """Check if chatgpt models are served by the proxy.
@@ -138,7 +138,7 @@ class OpenAIProvider(BaseProvider):
         from container import PROXY_PORT
         master_key = config.get_env("LITELLM_MASTER_KEY")
         if not master_key:
-            return False, "LITELLM_MASTER_KEY not set. Run './litellm.sh start' first."
+            return False, "LITELLM_MASTER_KEY not set. Run './proclaude.sh start' first."
         try:
             resp = requests.get(
                 f"http://localhost:{PROXY_PORT}/v1/models",
@@ -219,10 +219,10 @@ class OpenAIProvider(BaseProvider):
         test_logs = container.get_logs_tail(10)
         if not test_logs:
             # Containerized mode: can't read LiteLLM container logs
-            # The OAuth URL must be found via ./litellm.sh logs
+            # The OAuth URL must be found via ./proclaude.sh logs
             return Status.UNREACHABLE, (
                 "Browser OAuth requires access to LiteLLM logs.\n"
-                "  Run './litellm.sh logs' in another terminal to find the login URL."
+                "  Run './proclaude.sh logs' in another terminal to find the login URL."
             )
 
         # Trigger the OAuth flow — LiteLLM only emits the login URL
@@ -236,7 +236,7 @@ class OpenAIProvider(BaseProvider):
         if chatgpt_model:
             master_key = config.get_env("LITELLM_MASTER_KEY")
             if not master_key:
-                return Status.NOT_CONFIGURED, "LITELLM_MASTER_KEY not set. Run './litellm.sh start' first."
+                return Status.NOT_CONFIGURED, "LITELLM_MASTER_KEY not set. Run './proclaude.sh start' first."
             log.debug("Triggering OAuth flow with request to %s", chatgpt_model)
             try:
                 requests.post(
@@ -283,7 +283,7 @@ class OpenAIProvider(BaseProvider):
         if not login_url:
             return Status.UNREACHABLE, (
                 "Could not find login URL in container logs.\n"
-                "  Make sure you have a chatgpt/ model configured and run './litellm.sh logs' to debug."
+                "  Make sure you have a chatgpt/ model configured and run './proclaude.sh logs' to debug."
             )
 
         print(f"\n")
@@ -332,4 +332,4 @@ class OpenAIProvider(BaseProvider):
             time.sleep(3)
 
         print()
-        return Status.UNREACHABLE, "Login timed out after 5 minutes. Run './litellm.sh login openai' to try again."
+        return Status.UNREACHABLE, "Login timed out after 5 minutes. Run './proclaude.sh login openai' to try again."
