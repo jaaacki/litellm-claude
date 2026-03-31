@@ -1,9 +1,7 @@
 services:
   litellm:
     image: ghcr.io/berriai/litellm:main-v1.82.4-nightly
-    container_name: litellm-proxy
-    ports:
-      - "127.0.0.1:4000:4000"
+    container_name: litellm
     volumes:
       - ./litellm_config.yaml:/app/config.yaml
       - ./.env:/app/.env
@@ -14,4 +12,28 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["--config", "/app/config.yaml", "--port", "4000"]
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  gateway:
+    build: ./gateway
+    container_name: litellm-gateway
+    ports:
+      - "127.0.0.1:2555:2555"
+    volumes:
+      - ./.env:/app/.env
+      - ./litellm_config.yaml:/app/litellm_config.yaml
+    env_file:
+      - .env
+    environment:
+      - PROXY_LITELLM_HOST=litellm
+      - PROXY_LITELLM_PORT=4000
+    depends_on:
+      litellm:
+        condition: service_healthy
     restart: always

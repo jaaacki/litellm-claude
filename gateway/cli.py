@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-import json
 import logging
 import sys
 import os
 
-from container import PROXY_PORT as PORT, DockerNotFoundError
+from container import PROXY_PORT as PORT
 from providers.base import Status
 
 log = logging.getLogger("litellm-cli")
@@ -32,17 +31,18 @@ def _setup_logging(verbose=False):
     )
 
 
+def _eprint(*args, **kwargs):
+    """Print to stderr (for interactive prompts that shouldn't mix with stdout data)."""
+    print(*args, file=sys.stderr, **kwargs)
+
+
 def show_help():
     name = os.environ.get("LITELLM_CLI_NAME", os.path.basename(sys.argv[0]) or "./litellm.sh")
     print("LiteLLM Gateway CLI")
     print(f"Usage: {name} <command> [options]")
     print()
-    print("Infrastructure:")
-    print("  start             Start the proxy container")
-    print("  stop              Stop and remove the container")
-    print("  restart           Restart the container")
-    print("  status            Container and model status")
-    print("  logs              Stream container logs")
+    print("Status:")
+    print("  status            Backend and model status")
     print()
     print("Models:")
     print("  model add         Add models (interactive)")
@@ -75,7 +75,7 @@ SUBCOMMAND_REGISTRY = {
         "logout": (None, "logout [name]", "Remove provider credentials"),
     },
     "launch": {
-        "claude": (None, "claude [--provider X] [--model Y] [--thinking low|medium|high] [-- args...]", "Launch Claude Code through the proxy"),
+        "claude": (None, "claude [--provider X] [--model Y] [--thinking low|medium|high] [--telegram|--no-telegram] [--emit-env <path>] [-- args...]", "Launch Claude Code through the proxy"),
     },
 }
 
@@ -97,8 +97,8 @@ def cmd_status():
     import providers
 
     cs, _ = container.status()
-    state = "running" if cs == Status.OK else "stopped"
-    print(f"Container:  litellm-proxy  [{state}]")
+    state = "reachable" if cs == Status.OK else "unreachable"
+    print(f"LiteLLM:    {state}")
     print(f"Port:       localhost:{PORT}")
     print()
 
@@ -131,14 +131,6 @@ def cmd_status():
             icon = "-"
             label = "unknown" if cs != Status.OK else "unknown provider"
         print(f"  {m['alias']:<12} {m['provider']:<10} {icon} {label}")
-
-
-def _print_restart_failure():
-    """Print container failure message with backup info if available."""
-    import config
-    print(f"  \u2717 Container failed to start. Check './litellm.sh logs' for details.")
-    if os.path.exists(config.CONFIG_BACKUP):
-        print(f"    Your previous config was backed up to litellm_config.yaml.bak")
 
 
 def _prompt_credentials(provider, auth_type):
@@ -207,41 +199,15 @@ def _print_login_result(login_status, msg):
 
 
 def _restart_and_report(context_msg, provider=None, added=None):
-    """Restart container and report status. Exits on failure.
-
-    Args:
-        context_msg: What triggered the restart (for log message)
-        provider: Optional provider to validate after restart
-        added: Optional list of added model aliases
-    """
-    import container
-
-    print(f"\n  Restarting container...")
-    log.debug("Restarting after %s", context_msg)
-    s, msg = container.restart()
-    if s != Status.OK:
-        _print_restart_failure()
-        sys.exit(1)
-    if not container.wait_healthy():
-        _print_restart_failure()
-        sys.exit(1)
-
-    if provider and added:
+    """Report change and suggest restart."""
+    log.debug("Config changed: %s", context_msg)
+    if added:
+        print(f"  Added: {', '.join(added)}")
+    if provider:
         status, msg = provider.validate()
         if status == Status.OK:
-            print(f"  Container is running. Added: {', '.join(added)}. {msg}")
-        else:
-            print(f"  Container is running. Added: {', '.join(added)}")
-            print(f"    Auth check: {msg}")
-    elif provider:
-        status, msg = provider.validate()
-        if status == Status.OK:
-            print(f"  Container is running. {msg}")
-        else:
-            print(f"  Container is running.")
-            print(f"    Auth check: {msg}")
-    else:
-        print(f"  Container is running.")
+            print(f"  {_icon(status)} {msg}")
+    print(f"  Restart to apply: ./litellm.sh restart")
 
 
 def _ollama_manual_input(provider, catalog):
@@ -573,7 +539,7 @@ def cmd_model_rm(provider_flag=None, model_flag=None, extra_args=None):
 
     names = ", ".join(f"'{m['alias']}'" for m in selected)
     confirm = input(
-        f"  Remove {names}? This will restart the container. [y/N]: "
+        f"  Remove {names}? [y/N]: "
     ).strip().lower()
     if confirm != "y":
         print("  Cancelled.")
@@ -626,45 +592,53 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     import container
 
     extra_args = extra_args or []
+    emit_env = _kwargs.get("emit_env")
+    # Use _eprint for interactive output so it doesn't pollute stdout in --emit-env mode
+    out = _eprint if emit_env else print
 
     # Validate thinking effort
     if thinking and thinking not in ("low", "medium", "high"):
-        print(f"  \u2717 Invalid thinking effort: {thinking}")
-        print(f"  Valid options: low, medium, high")
+        out(f"  \u2717 Invalid thinking effort: {thinking}")
+        out(f"  Valid options: low, medium, high")
         sys.exit(1)
 
-    # Step 1: Check claude binary
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        print("  \u2717 Claude Code CLI not found. Install it first:")
-        print("    npm install -g @anthropic-ai/claude-code")
-        sys.exit(1)
+    # Step 1: Check claude binary (skip in --emit-env mode)
+    claude_bin = None
+    if not emit_env:
+        # Detect if running inside container (claude binary won't be here)
+        if os.environ.get("PROXY_LITELLM_HOST"):
+            print("  \u2717 'launch claude' must be run via ./litellm.sh on the host")
+            print("    Run: ./litellm.sh launch claude")
+            sys.exit(1)
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            print("  \u2717 Claude Code CLI not found. Install it first:")
+            print("    npm install -g @anthropic-ai/claude-code")
+            sys.exit(1)
 
-    # Step 2: Ensure proxy is running (auto-start if needed)
+    # Step 2: Check LiteLLM backend is reachable
     cs, _ = container.status()
     if cs != Status.OK:
-        print("  Starting proxy...")
-        s, msg = container.up()
-        if s != Status.OK:
-            print(f"  \u2717 {msg}")
+        if emit_env:
+            _eprint("  \u2717 LiteLLM backend is not reachable")
             sys.exit(1)
-        if not container.wait_healthy():
-            print("  \u2717 Container not healthy after startup")
+        else:
+            print("  \u2717 LiteLLM backend is not reachable. Run './litellm.sh start' first.")
             sys.exit(1)
 
     # Step 3: Pick model — skip provider validation for speed
     configured_models = config.list_models()
 
     if not configured_models:
-        print("  \u2717 No models configured.")
-        print("    Run: ./litellm.sh model add")
+        out("  \u2717 No models configured.")
+        out("    Run: ./litellm.sh model add")
         sys.exit(1)
 
     # Filter by provider flag if given
     if provider_flag:
         candidates = [m for m in configured_models if m["provider"] == provider_flag]
         if not candidates:
-            print(f"  \u2717 No models configured for provider '{provider_flag}'.")
+            out(f"  \u2717 No models configured for provider '{provider_flag}'.")
             sys.exit(1)
     else:
         candidates = configured_models
@@ -673,33 +647,33 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     if model_flag:
         match = [m for m in candidates if m["alias"] == model_flag]
         if not match:
-            print(f"  \u2717 Model '{model_flag}' not found.")
-            print(f"  Available: {', '.join(m['alias'] for m in candidates)}")
+            out(f"  \u2717 Model '{model_flag}' not found.")
+            out(f"  Available: {', '.join(m['alias'] for m in candidates)}")
             sys.exit(1)
         model = match[0]
     elif len(candidates) == 1:
         model = candidates[0]
     else:
-        print(f"\n  Select a model:\n")
+        out(f"\n  Select a model:\n")
         for i, m in enumerate(candidates, 1):
-            print(f"    [{i}] {m['alias']} ({m['provider']})")
-        print()
+            out(f"    [{i}] {m['alias']} ({m['provider']})")
+        out("")
         choice = input("  Choose: ").strip()
         try:
             model = candidates[int(choice) - 1]
         except (ValueError, IndexError):
-            print("  Invalid choice.")
+            out("  Invalid choice.")
             sys.exit(1)
 
     # Step 5: Thinking effort (interactive if not passed and model supports it)
     import providers as _providers
     provider = _providers.get_provider(model["provider"])
     if not thinking and provider and provider.supports_thinking:
-        print(f"\n  Thinking effort:\n")
-        print(f"    [1] low")
-        print(f"    [2] medium")
-        print(f"    [3] high")
-        print()
+        out(f"\n  Thinking effort:\n")
+        out(f"    [1] low")
+        out(f"    [2] medium")
+        out(f"    [3] high")
+        out("")
         tc = input("  Choose (Enter for default): ").strip()
         thinking_map = {"1": "low", "2": "medium", "3": "high"}
         if tc in thinking_map:
@@ -708,9 +682,31 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     # Step 6: Read master key
     master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
 
-    # Step 7: Launch
-    log.debug("Launching Claude Code: model=%s provider=%s thinking=%s", model["alias"], model["provider"], thinking or "default")
-    print(f"  Launching Claude Code ({model['alias']})...")
+    # Step 7: Telegram binding (skip prompt if flag was passed)
+    telegram = _kwargs.get("telegram")
+    if telegram is None:
+        telegram = input("\n  Bind session to Telegram? [y/N]: ").strip().lower() == "y"
+
+    # Step 8: Launch or print env
+    log.debug("Launching Claude Code: model=%s provider=%s thinking=%s telegram=%s",
+              model["alias"], model["provider"], thinking or "default", telegram)
+
+    # Check for --emit-env mode (used by litellm.sh to get env without exec'ing)
+    if emit_env:
+        with open(emit_env, "w") as f:
+            f.write(f"export ANTHROPIC_BASE_URL='http://localhost:{PORT}'\n")
+            f.write(f"export ANTHROPIC_AUTH_TOKEN='{master_key}'\n")
+            f.write(f"export ANTHROPIC_MODEL='{model['alias']}'\n")
+            f.write(f"export CLAUDE_CODE_DISABLE_1M_CONTEXT=1\n")
+            if thinking:
+                f.write(f"export ANTHROPIC_CUSTOM_HEADERS='x-thinking-effort: {thinking}'\n")
+            if telegram:
+                channel = os.environ.get("TELEGRAM_CHANNEL", "plugin:telegram@claude-plugins-official")
+                f.write(f"export CLAUDE_CHANNELS='{channel}'\n")
+        return
+
+    # Normal mode: exec claude
+    out(f"  Launching Claude Code ({model['alias']})...")
 
     os.environ["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}"
     os.environ["ANTHROPIC_AUTH_TOKEN"] = master_key
@@ -719,7 +715,11 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     if thinking:
         os.environ["ANTHROPIC_CUSTOM_HEADERS"] = f"x-thinking-effort: {thinking}"
         print(f"  Thinking effort: {thinking}")
-    cmd = [claude_bin, "--dangerously-skip-permissions"] + extra_args
+    cmd = [claude_bin, "--dangerously-skip-permissions"]
+    if telegram:
+        channel = os.environ.get("TELEGRAM_CHANNEL", "plugin:telegram@claude-plugins-official")
+        cmd += ["--channels", channel]
+    cmd += extra_args
     os.execvp(claude_bin, cmd)
 
 
@@ -757,6 +757,15 @@ def _parse_flags(args):
         elif args[i] == "--thinking" and i + 1 < len(args):
             extra_flags["thinking"] = args[i + 1]
             i += 2
+        elif args[i] == "--telegram":
+            extra_flags["telegram"] = True
+            i += 1
+        elif args[i] == "--no-telegram":
+            extra_flags["telegram"] = False
+            i += 1
+        elif args[i] == "--emit-env" and i + 1 < len(args):
+            extra_flags["emit_env"] = args[i + 1]
+            i += 2
         elif args[i] == "--":
             remaining.extend(args[i + 1:])
             break
@@ -788,37 +797,20 @@ def main():
     rest = args[1:]
     log.debug("Executing command: %s %s", cmd, rest)
 
-    # --- Single-word infra commands (take no args) ---
-    if cmd in ("start", "stop", "restart", "status", "logs"):
+    # --- Infrastructure commands redirected to litellm.sh ---
+    if cmd in ("start", "stop", "restart", "logs"):
+        print(f"  '{cmd}' is handled by litellm.sh directly.")
+        print(f"  Run: ./litellm.sh {cmd}")
+        return
+
+    if cmd == "status":
         if any(a in ("-h", "--help") for a in rest):
             show_help()
             return
         if rest:
-            print(f"  '{cmd}' does not accept arguments: {' '.join(rest)}")
+            print(f"  'status' does not accept arguments: {' '.join(rest)}")
             sys.exit(1)
-        if cmd == "start":
-            import container
-            s, msg = container.up()
-            print(f"  {'\u2713' if s == Status.OK else '\u2717'} {msg}")
-            if s != Status.OK:
-                sys.exit(1)
-        elif cmd == "stop":
-            import container
-            s, msg = container.down()
-            if s != Status.OK:
-                print(f"  \u2717 {msg}")
-                sys.exit(1)
-        elif cmd == "restart":
-            import container
-            s, msg = container.restart()
-            if s != Status.OK:
-                print(f"  \u2717 {msg}")
-                sys.exit(1)
-        elif cmd == "status":
-            cmd_status()
-        elif cmd == "logs":
-            import container
-            container.logs()
+        cmd_status()
 
     # --- Subcommand groups (help only before -- boundary) ---
     elif cmd in SUBCOMMAND_REGISTRY:
@@ -863,9 +855,6 @@ if __name__ == "__main__":
         sys.exit(130)
     except EOFError:
         print("\n  Cancelled (not interactive).")
-        sys.exit(1)
-    except DockerNotFoundError as e:
-        print(f"  \u2717 {e}")
         sys.exit(1)
     except Exception as e:
         log.debug("Unhandled exception", exc_info=True)

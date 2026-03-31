@@ -57,7 +57,7 @@ def _env_int(name, default):
 
 
 # --- Configuration (all from environment, no config.py dependency) ---
-LITELLM_HOST = os.environ.get("PROXY_LITELLM_HOST", "localhost")
+LITELLM_HOST = os.environ.get("PROXY_LITELLM_HOST", "litellm")
 LITELLM_PORT = _env_int("PROXY_LITELLM_PORT", 4000)
 LISTEN_PORT = _env_int("PROXY_LISTEN_PORT", int(sys.argv[1]) if len(sys.argv) > 1 else 2555)
 MAX_WORKERS = _env_int("PROXY_MAX_WORKERS", 20)
@@ -1238,4 +1238,4 @@ if __name__ == "__main__":
     )
     log.info("Proxy :%d -> LiteLLM :%d (workers=%d)", LISTEN_PORT, LITELLM_PORT, MAX_WORKERS)
     _load_translated_models()
-    BoundedThreadServer(("127.0.0.1", LISTEN_PORT), Handler).serve_forever()
+    BoundedThreadServer(("0.0.0.0", LISTEN_PORT), Handler).serve_forever()

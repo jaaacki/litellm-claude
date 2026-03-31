@@ -1,0 +1,15 @@
+# Development overrides: bind-mount source for live editing
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    volumes:
+      - ./.env:/app/.env
+      - ./litellm_config.yaml:/app/litellm_config.yaml
+      # Dev: bind-mount source files for live editing
+      - ./gateway/proxy.py:/app/proxy.py
+      - ./gateway/config.py:/app/config.py
+      - ./gateway/cli.py:/app/cli.py
+      - ./gateway/providers:/app/providers

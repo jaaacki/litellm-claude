@@ -106,7 +106,11 @@ class OpenAIProvider(BaseProvider):
 
         # Primary check: look for auth-success patterns in container logs (free)
         logs = container.get_logs_tail(200)
-        if self._AUTH_LOG_PATTERN.search(logs):
+        if not logs:
+            # Containerized mode: can't access LiteLLM logs from gateway
+            # Fall back to proxy model check only
+            log.debug("No logs available (containerized mode), using proxy check only")
+        elif self._AUTH_LOG_PATTERN.search(logs):
             log.debug("Browser OAuth auth pattern found in logs")
             return Status.UNVERIFIED, "Browser OAuth may be active (log pattern found, but cannot independently verify upstream auth)"
 
@@ -208,6 +212,16 @@ class OpenAIProvider(BaseProvider):
 
         # Capture timestamp before looking for URL
         since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Quick check: can we access logs?
+        test_logs = container.get_logs_tail(10)
+        if not test_logs:
+            # Containerized mode: can't read LiteLLM container logs
+            # The OAuth URL must be found via ./litellm.sh logs
+            return Status.UNREACHABLE, (
+                "Browser OAuth requires access to LiteLLM logs.\n"
+                "  Run './litellm.sh logs' in another terminal to find the login URL."
+            )
 
         # Trigger the OAuth flow — LiteLLM only emits the login URL
         # when a request actually hits a chatgpt/ model endpoint
