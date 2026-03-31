@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY proxy.py config.py cli.py ./
+COPY proxy.py config.py cli.py container.py ./
 COPY providers/ ./providers/
 
 EXPOSE 2555
