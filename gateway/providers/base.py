@@ -39,6 +39,9 @@ class BaseProvider(ABC):
     supports_thinking: bool = False
     anthropic_base_url: str = None  # Native Anthropic-compatible endpoint (bypasses LiteLLM)
     native_auth: dict = None  # {"header": "x-api-key", "env": "MINIMAX_API_KEY"} — how proxy.py authenticates native forwarding
+    # Per-model token limits: {alias: {"context": int, "max_output": int}}
+    # Used by cli.py to set CLAUDE_CODE_MAX_MODEL_TOKENS / MAX_OUTPUT_TOKENS at launch.
+    model_limits: dict = {}
 
     def __init__(self):
         # Instance-level copies to prevent mutable class-level sharing

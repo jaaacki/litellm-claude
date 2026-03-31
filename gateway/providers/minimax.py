@@ -19,6 +19,11 @@ class MiniMaxProvider(BaseProvider):
         "MiniMax-M2.5": "openai/MiniMax-M2.5",
         "MiniMax-Text-01": "openai/MiniMax-Text-01",
     }
+    model_limits = {
+        "MiniMax-M2.7":    {"context": 1000000, "max_output": 131072},
+        "MiniMax-M2.5":    {"context": 1000000, "max_output": 131072},
+        "MiniMax-Text-01": {"context": 1000000, "max_output": 131072},
+    }
 
     def get_extra_params(self):
         """Extra litellm_params for MiniMax models."""

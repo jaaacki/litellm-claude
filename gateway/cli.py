@@ -725,12 +725,21 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     log.debug("Launching Claude Code: model=%s provider=%s thinking=%s telegram=%s",
               model["alias"], model["provider"], thinking or "default", telegram)
 
+    # Look up model token limits from provider
+    limits = {}
+    if provider and hasattr(provider, 'model_limits'):
+        limits = provider.model_limits.get(model["alias"], {})
+
     # Check for --emit-env mode (used by proclaude.sh to get env without exec'ing)
     if emit_env:
         with open(emit_env, "w") as f:
             f.write(f"export ANTHROPIC_BASE_URL='http://localhost:{PORT}'\n")
             f.write(f"export ANTHROPIC_AUTH_TOKEN='{master_key}'\n")
             f.write(f"export ANTHROPIC_MODEL='{model['alias']}'\n")
+            if limits.get("context"):
+                f.write(f"export CLAUDE_CODE_MAX_MODEL_TOKENS='{limits['context']}'\n")
+            if limits.get("max_output"):
+                f.write(f"export CLAUDE_CODE_MAX_OUTPUT_TOKENS='{limits['max_output']}'\n")
             if thinking:
                 f.write(f"export ANTHROPIC_CUSTOM_HEADERS='x-thinking-effort: {thinking}'\n")
             if telegram:
@@ -744,6 +753,10 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     os.environ["ANTHROPIC_BASE_URL"] = f"http://localhost:{PORT}"
     os.environ["ANTHROPIC_AUTH_TOKEN"] = master_key
     os.environ["ANTHROPIC_MODEL"] = model["alias"]
+    if limits.get("context"):
+        os.environ["CLAUDE_CODE_MAX_MODEL_TOKENS"] = str(limits["context"])
+    if limits.get("max_output"):
+        os.environ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(limits["max_output"])
     if thinking:
         os.environ["ANTHROPIC_CUSTOM_HEADERS"] = f"x-thinking-effort: {thinking}"
         print(f"  Thinking effort: {thinking}")

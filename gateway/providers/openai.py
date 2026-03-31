@@ -33,6 +33,18 @@ class OpenAIProvider(BaseProvider):
         "gpt-5.3-chat-latest": "chatgpt/gpt-5.3-chat-latest",
     }
 
+    model_limits = {
+        "gpt-5.4":             {"context": 1000000, "max_output": 128000},
+        "gpt-5.4-pro":         {"context": 1000000, "max_output": 128000},
+        "gpt-5.3-codex":       {"context": 1000000, "max_output": 32768},
+        "gpt-5.3-codex-spark": {"context": 1000000, "max_output": 32768},
+        "gpt-5.3-instant":     {"context": 1000000, "max_output": 32768},
+        "gpt-5.3-chat-latest": {"context": 1000000, "max_output": 32768},
+        "o3":                  {"context": 200000,  "max_output": 100000},
+        "o3-pro":              {"context": 200000,  "max_output": 100000},
+        "o4-mini":             {"context": 200000,  "max_output": 100000},
+    }
+
     # OpenAI API key models (openai/ prefix)
     _api_key_models = {
         "gpt-5.4": "openai/gpt-5.4",

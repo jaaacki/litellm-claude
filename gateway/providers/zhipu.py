@@ -19,6 +19,10 @@ class ZhipuProvider(BaseProvider):
         "glm-5.1": "openai/glm-5.1",
         "glm-5": "openai/glm-5",
     }
+    model_limits = {
+        "glm-5.1": {"context": 204800, "max_output": 131072},
+        "glm-5":   {"context": 204800, "max_output": 131072},
+    }
 
     API_BASE = "https://api.z.ai/api/coding/paas/v4"
 
