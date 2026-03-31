@@ -20,6 +20,8 @@ import ssl
 import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
+
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import logging
 
@@ -160,6 +162,22 @@ def _error_response(status_code, message, error_type="proxy_error"):
     return status_code, json.dumps(
         {"error": {"message": message, "type": error_type}}
     ).encode()
+
+
+def _backend_readiness():
+    """Probe LiteLLM readiness from inside the gateway process."""
+    url = f"http://{LITELLM_HOST}:{LITELLM_PORT}/health/readiness"
+    try:
+        resp = requests.get(url, timeout=5)
+    except requests.RequestException as e:
+        log.warning("Backend readiness probe failed for %s: %s", url, e)
+        return 503, {"status": "unreachable", "detail": f"Cannot reach LiteLLM at {LITELLM_HOST}:{LITELLM_PORT}"}
+
+    if resp.status_code == 200:
+        return 200, {"status": "ok"}
+
+    log.warning("Backend readiness probe returned HTTP %d for %s", resp.status_code, url)
+    return 503, {"status": "unreachable", "detail": f"LiteLLM readiness returned status {resp.status_code}"}
 
 
 def _validate_messages(body_json):
@@ -604,6 +622,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "16")
             self.end_headers()
             self.wfile.write(b'{"status":"ok"}')
+            return
+
+        if method == "GET" and self.path == "/health/readiness":
+            status_code, payload = _backend_readiness()
+            body = json.dumps(payload).encode()
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         raw_cl = self.headers.get("Content-Length")
