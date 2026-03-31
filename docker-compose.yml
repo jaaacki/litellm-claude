@@ -15,10 +15,10 @@ services:
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
 
   gateway:
     build: ./gateway
@@ -34,6 +34,5 @@ services:
       - PROXY_LITELLM_HOST=litellm
       - PROXY_LITELLM_PORT=4000
     depends_on:
-      litellm:
-        condition: service_healthy
+      - litellm
     restart: always
