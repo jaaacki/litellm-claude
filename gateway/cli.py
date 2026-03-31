@@ -642,14 +642,36 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
         out("    Run: ./litellm.sh model add")
         sys.exit(1)
 
+    # Hide configured Ollama entries that are not currently available locally.
+    available_ollama = None
+    candidates = []
+    for configured_model in configured_models:
+        if configured_model["provider"] != "ollama":
+            candidates.append(configured_model)
+            continue
+
+        import providers as _providers
+        ollama_provider = _providers.get_provider("ollama")
+        if not ollama_provider:
+            continue
+        if available_ollama is None:
+            available_ollama = ollama_provider.discover_models()
+            if available_ollama is None:
+                available_ollama = {}
+        if configured_model["alias"] in available_ollama:
+            candidates.append(configured_model)
+
     # Filter by provider flag if given
     if provider_flag:
-        candidates = [m for m in configured_models if m["provider"] == provider_flag]
+        candidates = [m for m in candidates if m["provider"] == provider_flag]
         if not candidates:
             out(f"  \u2717 No models configured for provider '{provider_flag}'.")
             sys.exit(1)
-    else:
-        candidates = configured_models
+
+    if not candidates:
+        out("  \u2717 No launchable models configured.")
+        out("    Run: ./litellm.sh model add")
+        sys.exit(1)
 
     # Filter by model flag if given
     if model_flag:
