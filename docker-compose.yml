@@ -34,5 +34,6 @@ services:
       - PROXY_LITELLM_HOST=litellm
       - PROXY_LITELLM_PORT=4000
     depends_on:
-      - litellm
+      litellm:
+        condition: service_healthy
     restart: always
