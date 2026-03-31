@@ -23,4 +23,4 @@ litellm_settings:
   drop_params: true
   modify_params: true
 general_settings:
-  master_key: sk-1234
+  master_key: os.environ/LITELLM_MASTER_KEY

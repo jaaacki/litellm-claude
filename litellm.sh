@@ -212,11 +212,12 @@ _launch_claude() {
     }
     docker exec "$GATEWAY_CONTAINER" rm -f "$emit_path" 2>/dev/null || true
 
-    # Read and validate env vars (only allow export KEY='value' lines)
+    # Read and validate env vars from the container output.
     while IFS= read -r line; do
-        if [[ "$line" =~ ^export\ [A-Za-z_][A-Za-z_0-9]*= ]]; then
-            eval "$line"
-        else
+        if [[ "$line" =~ ^export\ ([A-Za-z_][A-Za-z_0-9]*)=\'([^\']*)\'$ ]]; then
+            printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+            export "${BASH_REMATCH[1]}"
+        elif [[ -n "$line" ]]; then
             echo "  Warning: skipping unexpected line in env output: $line" >&2
         fi
     done <<< "$env_output"
@@ -297,12 +298,19 @@ _ensure_docker
 CMD="$1"
 shift
 
+if [ "$CMD" = "start" ] && [ -z "${LITELLM_MASTER_KEY:-}" ]; then
+    if ! python3 -c "import sys; sys.path.insert(0, '$DIR/gateway'); import config; config.ensure_master_key()"; then
+        exit 1
+    fi
+    _load_env
+fi
+
 case "$CMD" in
     start)
+        gw_wait=0
         echo "  Starting services..."
         _docker_compose up -d --build
         # Wait for gateway container
-        local gw_wait=0
         while ! _gateway_running && [ $gw_wait -lt 15 ]; do
             sleep 1
             gw_wait=$((gw_wait + 1))

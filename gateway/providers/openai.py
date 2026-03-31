@@ -136,7 +136,9 @@ class OpenAIProvider(BaseProvider):
         found=False with error=None means "checked successfully, models not present."
         """
         from container import PROXY_PORT
-        master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+        master_key = config.get_env("LITELLM_MASTER_KEY")
+        if not master_key:
+            return False, "LITELLM_MASTER_KEY not set. Run './litellm.sh start' first."
         try:
             resp = requests.get(
                 f"http://localhost:{PROXY_PORT}/v1/models",
@@ -232,7 +234,9 @@ class OpenAIProvider(BaseProvider):
                 chatgpt_model = m["alias"]
                 break
         if chatgpt_model:
-            master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+            master_key = config.get_env("LITELLM_MASTER_KEY")
+            if not master_key:
+                return Status.NOT_CONFIGURED, "LITELLM_MASTER_KEY not set. Run './litellm.sh start' first."
             log.debug("Triggering OAuth flow with request to %s", chatgpt_model)
             try:
                 requests.post(

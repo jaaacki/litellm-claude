@@ -299,7 +299,11 @@ def cmd_provider_login(provider_flag=None, model_flag=None, extra_args=None):
 
     auth_type = _choose_auth_type(provider)
     credentials = _prompt_credentials(provider, auth_type)
-    result = _print_login_result(*provider.login(auth_type, credentials=credentials))
+    try:
+        result = _print_login_result(*provider.login(auth_type, credentials=credentials))
+    except RuntimeError as e:
+        print(f"  ✗ {e}")
+        sys.exit(1)
     if result not in (Status.OK, Status.UNVERIFIED):
         sys.exit(1)
 
@@ -356,8 +360,12 @@ def cmd_provider_logout(provider_flag=None, model_flag=None, extra_args=None):
         print("  Cancelled.")
         return
 
-    for var in env_vars_for_auth:
-        config.remove_env(var)
+    try:
+        for var in env_vars_for_auth:
+            config.remove_env(var)
+    except RuntimeError as e:
+        print(f"  ✗ {e}")
+        sys.exit(1)
     print(f"  \u2713 Removed credentials for {provider.display_name}.")
 
 
@@ -570,8 +578,12 @@ def cmd_model_rm(provider_flag=None, model_flag=None, extra_args=None):
                         f"Remove {', '.join(all_env_vars)} from .env? [y/N]: "
                     ).strip().lower()
                     if cleanup == "y":
-                        for var in all_env_vars:
-                            config.remove_env(var)
+                        try:
+                            for var in all_env_vars:
+                                config.remove_env(var)
+                        except RuntimeError as e:
+                            print(f"  ✗ {e}")
+                            sys.exit(1)
                         print(f"  \u2713 Cleaned up env vars.")
 
     # Restart only if container is running
@@ -676,7 +688,11 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             thinking = thinking_map[tc]
 
     # Step 6: Read master key
-    master_key = config.get_env("LITELLM_MASTER_KEY") or "sk-1234"
+    try:
+        master_key = config.ensure_master_key()
+    except RuntimeError as e:
+        out(f"  ✗ {e}")
+        sys.exit(1)
 
     # Step 7: Telegram binding (skip prompt if flag was passed)
     telegram = _kwargs.get("telegram")

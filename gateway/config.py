@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 import shutil
 import stat
 import tempfile
@@ -9,6 +10,10 @@ from providers.base import Status
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger("litellm-cli.config")
+ENV_WRITE_ERROR = (
+    "Cannot update .env from inside the gateway container. "
+    "Run `./litellm.sh` from the host, or edit .env manually and restart."
+)
 CONFIG_PATH = os.path.join(DIR, "litellm_config.yaml")
 CONFIG_BACKUP = CONFIG_PATH + ".bak"
 ENV_PATH = os.path.join(DIR, ".env")
@@ -252,7 +257,28 @@ def set_env(key, value):
         if new_lines and not new_lines[-1].endswith("\n"):
             new_lines.append("\n")
         new_lines.append(f"{key}={value}\n")
-    _write_env_lines(new_lines)
+    try:
+        _write_env_lines(new_lines)
+    except OSError as e:
+        log.error("Failed to write %s to %s: %s", key, ENV_PATH, e)
+        raise RuntimeError(ENV_WRITE_ERROR) from e
+
+
+def ensure_master_key():
+    """Return the configured master key, generating and persisting one if missing."""
+    master_key = get_env("LITELLM_MASTER_KEY")
+    if master_key:
+        return master_key
+
+    master_key = secrets.token_hex(16)
+    try:
+        set_env("LITELLM_MASTER_KEY", master_key)
+    except RuntimeError as e:
+        log.error("Failed to persist generated master key to %s", ENV_PATH)
+        raise RuntimeError(ENV_WRITE_ERROR) from e
+
+    log.info("Generated and persisted a new LiteLLM master key")
+    return master_key
 
 
 def remove_env(key):
@@ -268,4 +294,8 @@ def remove_env(key):
                 new_lines.append(f"# REMOVED: {stripped}\n")
                 continue
         new_lines.append(line)
-    _write_env_lines(new_lines)
+    try:
+        _write_env_lines(new_lines)
+    except OSError as e:
+        log.error("Failed to remove %s from %s: %s", key, ENV_PATH, e)
+        raise RuntimeError(ENV_WRITE_ERROR) from e
