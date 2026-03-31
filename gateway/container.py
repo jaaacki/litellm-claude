@@ -21,7 +21,7 @@ def status():
     """Check if LiteLLM backend is reachable. Returns (Status, message)."""
     try:
         resp = requests.get(
-            f"http://{LITELLM_HOST}:{LITELLM_PORT}/health",
+            f"http://{LITELLM_HOST}:{LITELLM_PORT}/health/readiness",
             timeout=5,
         )
         if resp.status_code == 200:
