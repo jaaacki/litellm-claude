@@ -178,7 +178,7 @@ class TranslationState:
             return []
 
         if self._visible_non_whitespace_text:
-            emit_text = self._pending_whitespace_text + text
+            emit_text = _normalize_pending_whitespace(self._pending_whitespace_text) + text
         else:
             emit_text = text.lstrip()
         self._pending_whitespace_text = ""
@@ -281,6 +281,14 @@ def _error_message(error):
     if isinstance(error, dict):
         return error.get("message", "Unknown upstream error")
     return str(error)
+
+
+def _normalize_pending_whitespace(text):
+    if not text:
+        return ""
+    if "\n" in text or "\r" in text:
+        return ""
+    return " "
 
 
 class OpenAIStreamState:

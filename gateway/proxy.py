@@ -845,6 +845,16 @@ def _strip_think_tags(text):
     # Remove <think>...</think> blocks (including multiline)
     cleaned = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL)
     return cleaned.strip()
+
+
+def _normalize_pending_whitespace_legacy(text):
+    if not text:
+        return ""
+    if "\n" in text or "\r" in text:
+        return ""
+    return " "
+
+
 def _is_streaming(resp):
     """Return True if the upstream response is an SSE stream."""
     ct = resp.getheader("Content-Type", "").lower()
@@ -1325,7 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
             if text_chars_sent == 0:
                 text = text.lstrip()
             else:
-                text = pending_whitespace_text + text
+                text = _normalize_pending_whitespace_legacy(pending_whitespace_text) + text
             pending_whitespace_text = ""
             if not text:
                 return

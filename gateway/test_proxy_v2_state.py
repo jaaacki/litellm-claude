@@ -238,7 +238,7 @@ class ProxyV2TranslationStateTests(unittest.TestCase):
         ))
         text_events = [evt for evt in next_events if isinstance(evt, TextDelta)]
         self.assertEqual(1, len(text_events))
-        self.assertEqual("\n\nWorld", text_events[0].text)
+        self.assertEqual("World", text_events[0].text)
 
 
 if __name__ == "__main__":
