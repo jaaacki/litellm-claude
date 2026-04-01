@@ -8,6 +8,7 @@ doesn't strip them in the Anthropic-to-Responses translation path.
 """
 
 import atexit
+import errno
 import json
 import os
 import re
@@ -45,6 +46,7 @@ try:
     from gateway.proxy_v2.request_translate import (
         apply_openai_tools_and_choice as _apply_openai_tools_and_choice_v2,
     )
+    from gateway.proxy_v2.tool_repair import repair_tool_call as _repair_tool_call_v2
     from gateway.proxy_v2.translate import (
         anthropic_to_openai_request as _anthropic_to_openai_v2,
     )
@@ -70,6 +72,7 @@ except ImportError:
     from proxy_v2.request_translate import (
         apply_openai_tools_and_choice as _apply_openai_tools_and_choice_v2,
     )
+    from proxy_v2.tool_repair import repair_tool_call as _repair_tool_call_v2
     from proxy_v2.translate import (
         anthropic_to_openai_request as _anthropic_to_openai_v2,
     )
@@ -152,6 +155,8 @@ _COUNTERS = {
     "xlate_stream_errors": 0,
     "xlate_stream_eof_no_finish": 0,
     "circuit_breaker_rejected": 0,
+    "client_disconnects": 0,
+    "client_timeouts": 0,
 }
 _COUNTERS_LOCK = threading.Lock()
 _ALIVE = True
@@ -178,6 +183,38 @@ def _print_counters():
 
 
 atexit.register(_print_counters)
+
+
+_CLIENT_DISCONNECT_ERRNOS = {
+    getattr(errno, "EPIPE", None),
+    getattr(errno, "ECONNRESET", None),
+    getattr(errno, "ESHUTDOWN", None),
+}
+_CLIENT_TIMEOUT_ERRNOS = {
+    getattr(errno, "ETIMEDOUT", None),
+}
+
+
+def _errno_value(exc):
+    return getattr(exc, "errno", None)
+
+
+def _is_client_disconnect_error(exc):
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return False
+    if isinstance(exc, OSError):
+        return _errno_value(exc) in _CLIENT_DISCONNECT_ERRNOS
+    return False
+
+
+def _is_socket_timeout_error(exc):
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return True
+    if isinstance(exc, OSError):
+        return _errno_value(exc) in _CLIENT_TIMEOUT_ERRNOS
+    return False
 
 
 class _CircuitBreaker:
@@ -307,6 +344,95 @@ _ALL_CONFIGURED_MODELS = None
 _NATIVE_ANTHROPIC_MODELS = None
 # Cache: model_name -> verified thinking contract
 _THINKING_CONTRACTS = None
+_MODEL_ALIAS_STATE_PATH = os.environ.get("PROXY_MODEL_ALIAS_STATE", "/tmp/litellm-proxy-model-alias.json")
+_MODEL_ALIAS_STATE = {
+    "mtime_ns": None,
+    "selected_model": "",
+    "anthropic_defaults": {},
+}
+_DECLARED_ANTHROPIC_MODEL_PREFIXES = {
+    "haiku": "claude-haiku",
+    "sonnet": "claude-sonnet",
+    "opus": "claude-opus",
+}
+
+
+def _load_model_alias_state():
+    """Load the current Claude-tier alias mapping persisted by launch cli."""
+    global _MODEL_ALIAS_STATE
+    try:
+        stat_result = os.stat(_MODEL_ALIAS_STATE_PATH)
+    except OSError:
+        _MODEL_ALIAS_STATE = {
+            "mtime_ns": None,
+            "selected_model": "",
+            "anthropic_defaults": {},
+        }
+        return _MODEL_ALIAS_STATE
+
+    mtime_ns = getattr(stat_result, "st_mtime_ns", None) or int(stat_result.st_mtime * 1e9)
+    if _MODEL_ALIAS_STATE.get("mtime_ns") == mtime_ns:
+        return _MODEL_ALIAS_STATE
+
+    try:
+        with open(_MODEL_ALIAS_STATE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError) as e:
+        log.warning("Failed to load model alias state from %s: %s", _MODEL_ALIAS_STATE_PATH, e)
+        _MODEL_ALIAS_STATE = {
+            "mtime_ns": mtime_ns,
+            "selected_model": "",
+            "anthropic_defaults": {},
+        }
+        return _MODEL_ALIAS_STATE
+
+    selected_model = data.get("selected_model")
+    defaults = data.get("anthropic_defaults")
+    if not isinstance(selected_model, str):
+        selected_model = ""
+    if not isinstance(defaults, dict):
+        defaults = {}
+    _MODEL_ALIAS_STATE = {
+        "mtime_ns": mtime_ns,
+        "selected_model": selected_model,
+        "anthropic_defaults": {
+            str(key): value for key, value in defaults.items() if isinstance(value, str)
+        },
+    }
+    return _MODEL_ALIAS_STATE
+
+
+def _resolve_declared_anthropic_model(model_name):
+    """Normalize Claude tier names to the currently declared proxy alias."""
+    if not isinstance(model_name, str) or not model_name.startswith("claude-"):
+        return model_name
+    if model_name in (_ALL_CONFIGURED_MODELS or ()):
+        return model_name
+    if model_name in (_NATIVE_ANTHROPIC_MODELS or {}):
+        return model_name
+
+    state = _load_model_alias_state()
+    defaults = state.get("anthropic_defaults") or {}
+    selected_model = state.get("selected_model") or ""
+    for tier, prefix in _DECLARED_ANTHROPIC_MODEL_PREFIXES.items():
+        if model_name.startswith(prefix):
+            return defaults.get(tier) or selected_model or model_name
+    return model_name
+
+
+def _normalize_declared_anthropic_model(body_json):
+    if not isinstance(body_json, dict):
+        return body_json
+    model_name = body_json.get("model", "")
+    resolved_model = _resolve_declared_anthropic_model(model_name)
+    if resolved_model == model_name:
+        return body_json
+    normalized = dict(body_json)
+    normalized["model"] = resolved_model
+    log.info("Normalized declared Anthropic model %s -> %s", model_name, resolved_model)
+    return normalized
+
+
 def _load_translated_models():
     """Load model routing tables from config + provider registry.
 
@@ -412,6 +538,10 @@ def _anthropic_to_openai(body_json, thinking_effort=None, thinking_contract=None
             )
             if text:
                 messages.append({"role": "system", "content": text})
+
+    validation_feedback = _build_tool_validation_feedback_message(data)
+    if validation_feedback is not None:
+        messages.append(validation_feedback)
 
     # Convert messages (handles text, tool_use, tool_result content blocks)
     for msg in data.get("messages", []):
@@ -561,6 +691,78 @@ def _anthropic_to_openai(body_json, thinking_effort=None, thinking_contract=None
     return json.dumps(openai_body).encode()
 
 
+def _build_tool_validation_feedback_message(body_json):
+    notes = []
+    seen = set()
+    for msg in body_json.get("messages", []):
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
+                continue
+            error_text = _legacy_flatten_tool_result_content(block)
+            note = _tool_validation_feedback_note(error_text)
+            if note and note not in seen:
+                seen.add(note)
+                notes.append(note)
+    if not notes:
+        return None
+    guidance = "\n".join(f"- {note}" for note in notes)
+    return {
+        "role": "system",
+        "content": (
+            "Tool validation correction:\n"
+            f"{guidance}\n"
+            "If you retry a tool, emit only the corrected tool call and follow the tool schema exactly."
+        ),
+    }
+
+
+def _legacy_flatten_tool_result_content(block):
+    result_content = block.get("content", "")
+    if isinstance(result_content, list):
+        parts = []
+        for item in result_content:
+            if isinstance(item, dict):
+                if item.get("type") == "image":
+                    source = item.get("source", {})
+                    parts.append("[image: %s]" % source.get("media_type", "image/png"))
+                else:
+                    parts.append(item.get("text", ""))
+            else:
+                parts.append(str(item))
+        result_content = "\n".join(parts)
+    if block.get("is_error"):
+        result_content = "[ERROR] %s" % result_content
+    return str(result_content)
+
+
+def _tool_validation_feedback_note(error_text):
+    text = str(error_text or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    if "summary is required when message is a string" in lower:
+        return (
+            "Your previous SendMessage call was invalid because summary is required when message is a string. "
+            "Reissue SendMessage with a non-empty summary."
+        )
+    validation_markers = (
+        " is required",
+        "must be ",
+        "invalid ",
+        "unexpected parameter",
+        "unknown parameter",
+        "schema",
+        "validation",
+    )
+    if any(marker in lower for marker in validation_markers):
+        excerpt = text[:240]
+        return f"Your previous tool call was rejected by Claude Code validation: {excerpt}"
+    return None
+
+
 def _openai_to_anthropic(response_bytes):
     """Convert OpenAI /v1/chat/completions response to Anthropic /v1/messages format.
 
@@ -579,15 +781,11 @@ def _openai_to_anthropic(response_bytes):
         msg = choices[0].get("message", {})
         finish_reason = choices[0].get("finish_reason", "stop")
 
-        # Text content (fall back to reasoning_content for models like Z.AI GLM)
-        # Prefer content when present (even if empty). Fall back to reasoning
-        # only when content key is absent (None means key not in message).
+        # Only expose visible assistant content. Upstream reasoning metadata
+        # must never be surfaced as user-visible text.
         content_text = msg.get("content")
-        reasoning_text = msg.get("reasoning_content")
         if content_text is not None:
             text = _strip_think_tags(content_text or "")
-        elif reasoning_text:
-            text = _strip_think_tags(reasoning_text)
         else:
             text = ""
         if text:
@@ -599,23 +797,25 @@ def _openai_to_anthropic(response_bytes):
             stop_reason = "tool_use"
             for tc in tool_calls:
                 fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
                 raw_args = fn.get("arguments", "{}")
                 try:
                     args = json.loads(raw_args)
                 except (ValueError, TypeError):
                     log.warning("Malformed tool arguments from upstream (tool=%s): %s",
-                                fn.get("name", "?"), raw_args[:200])
+                                tool_name or "?", raw_args[:200])
                     # Fail closed: emit error text instead of fake tool_use
                     content.append({
                         "type": "text",
-                        "text": "[Tool call failed: malformed arguments for %s]" % fn.get("name", "unknown"),
+                        "text": "[Tool call failed: malformed arguments for %s]" % (tool_name or "unknown"),
                     })
                     stop_reason = "end_turn"
                     continue
+                args, _, _ = _repair_tool_call_v2(tool_name, args, raw_args)
                 content.append({
                     "type": "tool_use",
                     "id": tc.get("id", ""),
-                    "name": fn.get("name", ""),
+                    "name": tool_name,
                     "input": args,
                 })
         else:
@@ -747,6 +947,7 @@ class Handler(BaseHTTPRequestHandler):
                 _inc_counter("invalid_request")
                 self._send_error(400, err, "validation_error")
                 return
+            body_json = _normalize_declared_anthropic_model(body_json)
             # Reject requests for models that are not in the configured model list.
             # Unknown models must NOT be silently remapped to a fallback — that mutates
             # billable behavior and corrupts the boundary contract.
@@ -1069,6 +1270,7 @@ class Handler(BaseHTTPRequestHandler):
         sse_events_sent = 0
         text_chars_sent = 0
         text_chars_suppressed = 0  # eaten by think filter
+        pending_whitespace_text = ""
         # Think-tag state machine
         in_think = False
         think_buf = ""
@@ -1114,7 +1316,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
         def _send_text_delta(text):
-            nonlocal text_block_open, content_block_index, text_chars_sent
+            nonlocal text_block_open, content_block_index, text_chars_sent, pending_whitespace_text
+            if not text:
+                return
+            if not text.strip():
+                pending_whitespace_text += text
+                return
+            if text_chars_sent == 0:
+                text = text.lstrip()
+            else:
+                text = pending_whitespace_text + text
+            pending_whitespace_text = ""
             if not text:
                 return
             if not text_block_open:
@@ -1302,15 +1514,11 @@ class Handler(BaseHTTPRequestHandler):
                         }
                         _send_event(f"event: message_start\ndata: {json.dumps(evt)}\n\n")
 
-                    # Handle text content (fall back to reasoning_content for Z.AI GLM)
-                    # Prefer content when present (even if empty). Fall back to reasoning
-                    # only when content key is absent (None means key not in delta).
+                    # Only expose visible assistant content. Upstream reasoning
+                    # metadata must never be surfaced as user-visible text.
                     content_val = delta.get("content")
-                    reasoning_val = delta.get("reasoning_content")
                     if content_val is not None:
                         text = content_val
-                    elif reasoning_val:
-                        text = reasoning_val
                     else:
                         text = ""
                     if text:
@@ -1372,9 +1580,18 @@ class Handler(BaseHTTPRequestHandler):
                 _log_summary("complete")
 
         except (socket.timeout, BrokenPipeError, ConnectionResetError, OSError) as e:
-            log.warning("SSE xlate: stream error: %s [%s]", type(e).__name__, e)
-            _inc_counter("xlate_stream_errors")
-            _log_summary("error_%s" % type(e).__name__)
+            if _is_socket_timeout_error(e):
+                log.warning("SSE xlate: upstream stream timeout: %s [%s]", type(e).__name__, e)
+                _inc_counter("xlate_stream_errors")
+                _log_summary("timeout_%s" % type(e).__name__)
+            elif _is_client_disconnect_error(e):
+                log.debug("SSE xlate: client disconnected during stream: %s [%s]", type(e).__name__, e)
+                _inc_counter("client_disconnects")
+                _log_summary("client_disconnect_%s" % type(e).__name__)
+            else:
+                log.warning("SSE xlate: stream error: %s [%s]", type(e).__name__, e)
+                _inc_counter("xlate_stream_errors")
+                _log_summary("error_%s" % type(e).__name__)
         finally:
             try:
                 self.wfile.write(b"0\r\n\r\n")
@@ -1440,8 +1657,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.path,
             )
         except (socket.timeout, BrokenPipeError, ConnectionResetError, OSError) as e:
-            log.warning("SSE xlate v2: stream error: %s [%s]", type(e).__name__, e)
-            _inc_counter("xlate_stream_errors")
+            if _is_socket_timeout_error(e):
+                log.warning("SSE xlate v2: upstream stream timeout: %s [%s]", type(e).__name__, e)
+                _inc_counter("xlate_stream_errors")
+            elif _is_client_disconnect_error(e):
+                log.debug("SSE xlate v2: client disconnected during stream: %s [%s]", type(e).__name__, e)
+                _inc_counter("client_disconnects")
+            else:
+                log.warning("SSE xlate v2: stream error: %s [%s]", type(e).__name__, e)
+                _inc_counter("xlate_stream_errors")
         finally:
             try:
                 self.wfile.write(b"0\r\n\r\n")
@@ -1550,8 +1774,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+            self.close_connection = True
             return
         if self.path == "/health/readiness":
             status_code, payload = _backend_readiness()
@@ -1559,13 +1785,42 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+            self.close_connection = True
             return
         self._proxy("GET")
 
+    def handle(self):
+        self.close_connection = True
+        try:
+            self.handle_one_request()
+            while not self.close_connection:
+                self.handle_one_request()
+        except Exception as e:
+            if _is_socket_timeout_error(e):
+                _inc_counter("client_timeouts")
+                log.debug("Idle client connection timed out for %s: %s", self.client_address, e)
+                self.close_connection = True
+                return
+            if _is_client_disconnect_error(e):
+                _inc_counter("client_disconnects")
+                log.debug("Client disconnected before next request from %s: %s", self.client_address, e)
+                self.close_connection = True
+                return
+            raise
+
     def log_message(self, fmt, *args):
         log.debug(fmt, *args)
+
+    def log_error(self, fmt, *args):
+        rendered = fmt % args if args else fmt
+        if rendered.startswith("Request timed out"):
+            _inc_counter("client_timeouts")
+            log.debug("%s", rendered)
+            return
+        log.warning("%s", rendered)
 
 
 class BoundedThreadServer(HTTPServer):
@@ -1597,6 +1852,14 @@ class BoundedThreadServer(HTTPServer):
             req.settimeout(SOCKET_TIMEOUT)
             self.finish_request(req, addr)
         except Exception as e:
+            if _is_socket_timeout_error(e):
+                _inc_counter("client_timeouts")
+                log.debug("Client socket timed out for %s: %s", addr, e)
+                return
+            if _is_client_disconnect_error(e):
+                _inc_counter("client_disconnects")
+                log.debug("Client disconnected for %s: %s", addr, e)
+                return
             log.error("Unhandled request error for %s: %s", addr, e, exc_info=True)
             _inc_counter("handler_errors")
             code, body = _error_response(500, "Internal proxy error", "proxy_error")

@@ -17,11 +17,25 @@ ENV_WRITE_ERROR = (
     "Cannot update .env from inside the gateway container. "
     "Run `./proclaude.sh` from the host, or edit .env manually and restart."
 )
-CONFIG_PATH = os.path.join(DIR, "litellm_config.yaml")
+PROJECT_ROOT = os.path.dirname(DIR)
+
+
+def _resolve_project_file(filename):
+    """Resolve a repo-level config file for both host and container layouts."""
+    local_path = os.path.join(DIR, filename)
+    parent_path = os.path.join(PROJECT_ROOT, filename)
+    if os.path.exists(local_path):
+        return local_path
+    if os.path.exists(parent_path):
+        return parent_path
+    return parent_path
+
+
+CONFIG_PATH = _resolve_project_file("litellm_config.yaml")
 CONFIG_BACKUP = CONFIG_PATH + ".bak"
-ENV_PATH = os.path.join(DIR, ".env")
+ENV_PATH = _resolve_project_file(".env")
 ENV_BACKUP = ENV_PATH + ".bak"
-ENV_EXAMPLE = os.path.join(DIR, ".env.example")
+ENV_EXAMPLE = _resolve_project_file(".env.example")
 
 # --- YAML helpers ---
 
@@ -53,7 +67,7 @@ def _load_yaml():
 
 def _atomic_write(path, content_fn):
     """Write to a temp file then rename atomically."""
-    fd, tmp_path = tempfile.mkstemp(dir=DIR, suffix=".tmp")
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             content_fn(f)

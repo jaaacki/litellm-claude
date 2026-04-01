@@ -9,6 +9,58 @@ except ImportError:
 
 
 class ProxyV2RequestTranslateTests(unittest.TestCase):
+    def test_translate_anthropic_request_injects_hidden_feedback_for_tool_validation_errors(self):
+        translated = translate_anthropic_request(
+            {
+                "model": "glm-5.1",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_send",
+                                "is_error": True,
+                                "content": "Error: summary is required when message is a string",
+                            }
+                        ],
+                    }
+                ],
+            },
+            thinking_effort=None,
+            thinking_contract=None,
+        )
+        self.assertEqual("system", translated["messages"][0]["role"])
+        self.assertIn("summary is required", translated["messages"][0]["content"])
+        self.assertIn("Reissue SendMessage", translated["messages"][0]["content"])
+
+    def test_translate_anthropic_request_preserves_required_tool_fields(self):
+        translated = translate_anthropic_request(
+            {
+                "model": "glm-5.1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "name": "SendMessage",
+                        "description": "Send a teammate message",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "to": {"type": "string"},
+                                "message": {"type": "string"},
+                                "summary": {"type": "string"},
+                            },
+                            "required": ["to", "message", "summary"],
+                        },
+                    }
+                ],
+            },
+            thinking_effort=None,
+            thinking_contract=None,
+        )
+        params = translated["tools"][0]["function"]["parameters"]
+        self.assertEqual(["to", "message", "summary"], params["required"])
+
     def test_translate_anthropic_request_forced_tool_choice_filters_tools_and_uses_required(self):
         translated = translate_anthropic_request(
             {

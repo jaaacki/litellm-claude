@@ -15,6 +15,7 @@ try:
         ToolCallStart,
         UsageDelta,
     )
+    from gateway.proxy_v2.tool_repair import repair_tool_call
 except ImportError:
     from proxy_v2.errors import ProxyError
     from proxy_v2.events import (
@@ -27,6 +28,7 @@ except ImportError:
         ToolCallStart,
         UsageDelta,
     )
+    from proxy_v2.tool_repair import repair_tool_call
 
 log = logging.getLogger("litellm-proxy.v2.anthropic_sse")
 
@@ -39,6 +41,7 @@ class AnthropicSSEWriter:
         self._next_index = 0
         self._tool_indexes = {}
         self._closed_tool_indexes = set()
+        self._tool_buffers = {}
         self._message_id = ""
         self._model = ""
         self._input_tokens = 0
@@ -122,31 +125,46 @@ class AnthropicSSEWriter:
                     "delta": {"type": "text_delta", "text": event.text},
                 }))
             elif isinstance(event, ToolCallStart):
-                chunks.extend(self._close_text_block())
                 block_index = self._tool_indexes.get(event.index)
                 if block_index is None:
                     block_index = self._next_index
                     self._next_index += 1
                     self._tool_indexes[event.index] = block_index
+                self._tool_buffers[event.index] = {
+                    "tool_call_id": event.tool_call_id,
+                    "name": event.name,
+                    "raw_arguments": "",
+                }
+            elif isinstance(event, ToolCallArgsDelta):
+                buffer = self._require_tool_buffer(event.index)
+                buffer["raw_arguments"] += event.partial_json
+            elif isinstance(event, ToolCallComplete):
+                block_index = self._require_tool_block_index(event.index)
+                buffer = self._require_tool_buffer(event.index)
+                repaired_input, repaired_raw, _ = repair_tool_call(
+                    buffer["name"],
+                    event.input,
+                    buffer["raw_arguments"],
+                )
+                raw_arguments = repaired_raw
+                if raw_arguments is None:
+                    raw_arguments = json.dumps(repaired_input, separators=(",", ":"))
+                chunks.extend(self._close_text_block())
                 chunks.append(_encode_sse("content_block_start", {
                     "type": "content_block_start",
                     "index": block_index,
                     "content_block": {
                         "type": "tool_use",
-                        "id": event.tool_call_id,
-                        "name": event.name,
+                        "id": buffer["tool_call_id"],
+                        "name": buffer["name"],
                         "input": {},
                     },
                 }))
-            elif isinstance(event, ToolCallArgsDelta):
-                block_index = self._require_tool_block_index(event.index)
                 chunks.append(_encode_sse("content_block_delta", {
                     "type": "content_block_delta",
                     "index": block_index,
-                    "delta": {"type": "input_json_delta", "partial_json": event.partial_json},
+                    "delta": {"type": "input_json_delta", "partial_json": raw_arguments},
                 }))
-            elif isinstance(event, ToolCallComplete):
-                block_index = self._require_tool_block_index(event.index)
                 if block_index not in self._closed_tool_indexes:
                     chunks.append(_encode_sse("content_block_stop", {
                         "type": "content_block_stop",
@@ -206,6 +224,18 @@ class AnthropicSSEWriter:
                 code="invalid_tool_event_order",
             )
         return block_index
+
+    def _require_tool_buffer(self, tool_call_index):
+        buffer = self._tool_buffers.get(tool_call_index)
+        if buffer is None:
+            log.error("Tool buffer missing for index %s", tool_call_index)
+            raise ProxyError(
+                502,
+                "Invalid tool event ordering for index %s" % tool_call_index,
+                "upstream_error",
+                code="invalid_tool_event_order",
+            )
+        return buffer
 
 
 def _encode_sse(event_name, payload):

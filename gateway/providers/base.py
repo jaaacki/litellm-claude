@@ -1,10 +1,19 @@
 import logging
 from abc import ABC, abstractmethod
 from enum import Enum
+import requests
 
 log = logging.getLogger("litellm-cli.providers")
 
 THINKING_LEVELS = ("low", "medium", "high")
+THINKING_LEVEL_LABELS = {
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra high",
+}
 
 
 def is_placeholder(value):
@@ -102,13 +111,22 @@ class BaseProvider(ABC):
         """Return a verified thinking contract dict for a configured model, or None."""
         return None
 
-    def _openai_reasoning_contract(self, route_family):
+    def _openai_reasoning_contract(self, route_family, *, levels=None, default_level=None):
         """Thinking contract for OpenAI-compatible chat/completions routes."""
+        resolved_levels = tuple(levels or self.thinking_levels)
+        if not resolved_levels:
+            raise ValueError("thinking levels must not be empty")
+        resolved_default = default_level or ("medium" if "medium" in resolved_levels else resolved_levels[0])
         return {
             "provider": self.name,
             "strategy": "openai_chat_reasoning_effort",
             "route_family": route_family,
-            "levels": self.thinking_levels,
+            "levels": resolved_levels,
+            "default_level": resolved_default,
+            "level_labels": {
+                level: THINKING_LEVEL_LABELS.get(level, level.replace("_", " ").title())
+                for level in resolved_levels
+            },
             "requires_openai_translation": True,
         }
 
@@ -151,3 +169,54 @@ class BaseProvider(ABC):
             return Status.INVALID, f"Provider error: {msg}"
 
         return Status.OK, ""
+
+    def _require_env_credential(self, env_var):
+        """Return (value, None) or (None, (Status, message)) for a required env var."""
+        import config as cfg
+
+        value = cfg.get_env(env_var)
+        if not value or is_placeholder(value):
+            return None, (Status.NOT_CONFIGURED, f"{env_var} not set")
+        return value, None
+
+    def _validate_openai_compatible_api_key(
+        self,
+        *,
+        env_var,
+        api_base,
+        model,
+        provider_label,
+        success_message,
+        invalid_message=None,
+        timeout=10,
+    ):
+        """Validate an API key against an OpenAI-compatible /chat/completions endpoint."""
+        api_key, failure = self._require_env_credential(env_var)
+        if failure is not None:
+            return failure
+
+        log.debug("Validating %s credentials with model %s", provider_label, model)
+
+        try:
+            resp = requests.post(
+                f"{api_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
+                timeout=timeout,
+            )
+        except requests.RequestException as e:
+            return Status.UNREACHABLE, f"Cannot reach {provider_label} API: {e}"
+
+        status, msg = self._classify_response(resp)
+        if status == Status.OK:
+            return status, success_message
+        if status == Status.INVALID and resp.status_code in (401, 403) and invalid_message:
+            return status, invalid_message
+        return status, msg

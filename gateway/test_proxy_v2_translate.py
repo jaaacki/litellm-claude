@@ -150,6 +150,37 @@ class ProxyV2TranslateRequestTests(unittest.TestCase):
 
 
 class ProxyV2TranslateResponseTests(unittest.TestCase):
+    def test_openai_to_anthropic_repairs_send_message_missing_summary(self):
+        upstream = {
+            "id": "resp_repair",
+            "model": "demo-model",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "SendMessage",
+                                    "arguments": "{\"to\":\"agent-1\",\"message\":\"{\\\"type\\\":\\\"shutdown_request\\\",\\\"reason\\\":\\\"done\\\"}\"}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+        translated = json.loads(
+            translate.openai_to_anthropic_response(json.dumps(upstream).encode("utf-8"))
+        )
+
+        self.assertEqual("tool_use", translated["stop_reason"])
+        self.assertEqual("SendMessage", translated["content"][0]["name"])
+        self.assertEqual("Shutdown now", translated["content"][0]["input"]["summary"])
+
     def test_openai_to_anthropic_fails_closed_on_malformed_tool_arguments(self):
         upstream = {
             "id": "resp_1",
@@ -189,7 +220,7 @@ class ProxyV2TranslateResponseTests(unittest.TestCase):
         )
         self.assertIn("Malformed tool arguments from upstream", "\n".join(captured.output))
 
-    def test_openai_to_anthropic_uses_reasoning_content_fallback_and_strips_think_tags(self):
+    def test_openai_to_anthropic_does_not_surface_reasoning_content(self):
         upstream = {
             "id": "resp_2",
             "model": "demo-model",
@@ -209,7 +240,7 @@ class ProxyV2TranslateResponseTests(unittest.TestCase):
         )
 
         self.assertEqual("end_turn", translated["stop_reason"])
-        self.assertEqual([{"type": "text", "text": "Visible answer"}], translated["content"])
+        self.assertEqual([], translated["content"])
 
     def test_strip_think_tags_leaves_non_think_text_unchanged(self):
         self.assertEqual("plain text", translate.strip_think_tags("plain text"))

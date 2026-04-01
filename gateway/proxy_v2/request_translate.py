@@ -29,9 +29,14 @@ def validate_anthropic_messages_request(body_json):
 
 def translate_anthropic_request(body_json, *, thinking_effort, thinking_contract):
     validate_anthropic_messages_request(body_json)
+    messages = _translate_messages(body_json)
+    validation_feedback = _build_tool_validation_feedback_message(body_json)
+    if validation_feedback is not None:
+        insert_at = 1 if messages and messages[0].get("role") == "system" else 0
+        messages.insert(insert_at, validation_feedback)
     openai_body = {
         "model": body_json.get("model"),
-        "messages": _translate_messages(body_json),
+        "messages": messages,
     }
 
     metadata = body_json.get("metadata")
@@ -82,6 +87,59 @@ def _translate_messages(body_json):
             continue
         messages.extend(_translate_content_blocks(role, content))
     return messages
+
+
+def _build_tool_validation_feedback_message(body_json):
+    notes = []
+    seen = set()
+    for msg in body_json.get("messages", []):
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
+                continue
+            error_text = _flatten_tool_result_content(block)
+            note = _tool_validation_feedback_note(error_text)
+            if note and note not in seen:
+                seen.add(note)
+                notes.append(note)
+    if not notes:
+        return None
+    guidance = "\n".join(f"- {note}" for note in notes)
+    return {
+        "role": "system",
+        "content": (
+            "Tool validation correction:\n"
+            f"{guidance}\n"
+            "If you retry a tool, emit only the corrected tool call and follow the tool schema exactly."
+        ),
+    }
+
+
+def _tool_validation_feedback_note(error_text):
+    text = str(error_text or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    if "summary is required when message is a string" in lower:
+        return (
+            "Your previous SendMessage call was invalid because summary is required when message is a string. "
+            "Reissue SendMessage with a non-empty summary."
+        )
+    validation_markers = (
+        " is required",
+        "must be ",
+        "invalid ",
+        "unexpected parameter",
+        "unknown parameter",
+        "schema",
+        "validation",
+    )
+    if any(marker in lower for marker in validation_markers):
+        excerpt = text[:240]
+        return f"Your previous tool call was rejected by Claude Code validation: {excerpt}"
+    return None
 
 
 def _translate_system_message(system):

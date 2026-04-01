@@ -14,7 +14,7 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     restart: always
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness')"]
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
       interval: 10s
       timeout: 5s
       retries: 60

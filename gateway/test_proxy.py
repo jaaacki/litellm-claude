@@ -1,4 +1,6 @@
 import sys
+import os
+import tempfile
 import unittest
 import types
 import json
@@ -130,7 +132,151 @@ class ProxyTranslationEngineTests(unittest.TestCase):
         self.assertEqual("v2", proxy._normalize_translation_engine("v2"))
 
 
+class ProxySocketClassificationTests(unittest.TestCase):
+    def test_classifies_client_disconnect_errors(self):
+        self.assertTrue(proxy._is_client_disconnect_error(ConnectionResetError(104, "Connection reset by peer")))
+        self.assertTrue(proxy._is_client_disconnect_error(BrokenPipeError(32, "Broken pipe")))
+
+    def test_classifies_timeout_errors(self):
+        self.assertTrue(proxy._is_socket_timeout_error(TimeoutError("timed out")))
+        self.assertFalse(proxy._is_client_disconnect_error(TimeoutError("timed out")))
+
+
 class ProxyLegacyTranslationTests(unittest.TestCase):
+    def test_openai_to_anthropic_repairs_send_message_missing_summary(self):
+        translated = json.loads(
+            proxy._openai_to_anthropic(
+                json.dumps(
+                    {
+                        "id": "resp_repair",
+                        "model": "demo-model",
+                        "choices": [
+                            {
+                                "finish_reason": "tool_calls",
+                                "message": {
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "function": {
+                                                "name": "SendMessage",
+                                                "arguments": "{\"to\":\"agent-1\",\"message\":\"{\\\"type\\\":\\\"shutdown_request\\\",\\\"reason\\\":\\\"done\\\"}\"}",
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                    }
+                ).encode("utf-8")
+            ).decode("utf-8")
+        )
+        self.assertEqual("Shutdown now", translated["content"][0]["input"]["summary"])
+
+    def test_anthropic_to_openai_injects_hidden_feedback_for_tool_validation_errors(self):
+        translated = json.loads(
+            proxy._anthropic_to_openai(
+                {
+                    "model": "glm-5.1",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_send",
+                                    "is_error": True,
+                                    "content": "Error: summary is required when message is a string",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ).decode("utf-8")
+        )
+        self.assertEqual("system", translated["messages"][0]["role"])
+        self.assertIn("summary is required", translated["messages"][0]["content"])
+        self.assertIn("Reissue SendMessage", translated["messages"][0]["content"])
+
+    def test_normalize_declared_anthropic_model_maps_all_claude_tiers_to_selected_alias(self):
+        original_path = proxy._MODEL_ALIAS_STATE_PATH
+        original_state = proxy._MODEL_ALIAS_STATE
+        original_all = proxy._ALL_CONFIGURED_MODELS
+        original_native = proxy._NATIVE_ANTHROPIC_MODELS
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+                json.dump(
+                    {
+                        "selected_model": "glm-5.1",
+                        "anthropic_defaults": {
+                            "haiku": "glm-5.1",
+                            "sonnet": "glm-5.1",
+                            "opus": "glm-5.1",
+                        },
+                    },
+                    tmp,
+                )
+                tmp_path = tmp.name
+            proxy._MODEL_ALIAS_STATE_PATH = tmp_path
+            proxy._MODEL_ALIAS_STATE = {"mtime_ns": None, "selected_model": "", "anthropic_defaults": {}}
+            proxy._ALL_CONFIGURED_MODELS = ["gpt-5.4", "MiniMax-M2.7", "glm-5.1"]
+            proxy._NATIVE_ANTHROPIC_MODELS = {}
+
+            self.assertEqual(
+                "glm-5.1",
+                proxy._normalize_declared_anthropic_model({"model": "claude-opus-4-6"})["model"],
+            )
+            self.assertEqual(
+                "glm-5.1",
+                proxy._normalize_declared_anthropic_model({"model": "claude-sonnet-4-6"})["model"],
+            )
+            self.assertEqual(
+                "glm-5.1",
+                proxy._normalize_declared_anthropic_model({"model": "claude-haiku-4-5"})["model"],
+            )
+        finally:
+            proxy._MODEL_ALIAS_STATE_PATH = original_path
+            proxy._MODEL_ALIAS_STATE = original_state
+            proxy._ALL_CONFIGURED_MODELS = original_all
+            proxy._NATIVE_ANTHROPIC_MODELS = original_native
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_normalize_declared_anthropic_model_preserves_configured_native_models(self):
+        original_all = proxy._ALL_CONFIGURED_MODELS
+        original_native = proxy._NATIVE_ANTHROPIC_MODELS
+        try:
+            proxy._ALL_CONFIGURED_MODELS = ["claude-opus-4-6", "glm-5.1"]
+            proxy._NATIVE_ANTHROPIC_MODELS = {"claude-opus-4-6": {"host": "demo.example.com"}}
+            normalized = proxy._normalize_declared_anthropic_model({"model": "claude-opus-4-6"})
+            self.assertEqual("claude-opus-4-6", normalized["model"])
+        finally:
+            proxy._ALL_CONFIGURED_MODELS = original_all
+            proxy._NATIVE_ANTHROPIC_MODELS = original_native
+
+    def test_openai_to_anthropic_does_not_surface_reasoning_content(self):
+        translated = json.loads(
+            proxy._openai_to_anthropic(
+                json.dumps(
+                    {
+                        "id": "resp_legacy",
+                        "model": "demo-model",
+                        "choices": [
+                            {
+                                "finish_reason": "stop",
+                                "message": {
+                                    "reasoning_content": "<think>private</think>\nVisible answer",
+                                },
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                    }
+                ).encode("utf-8")
+            ).decode("utf-8")
+        )
+        self.assertEqual([], translated["content"])
+        self.assertEqual("end_turn", translated["stop_reason"])
+
     def test_anthropic_to_openai_forced_tool_choice_filters_tools_and_uses_required(self):
         translated = json.loads(
             proxy._anthropic_to_openai(

@@ -154,6 +154,92 @@ class ProxyV2TranslationStateTests(unittest.TestCase):
         ))
         self.assertEqual([Abort(reason="upstream_error", message="upstream exploded")], events)
 
+    def test_noop_chunk_followed_by_eof_mentions_dropped_upstream_metadata(self):
+        state = TranslationState()
+        events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_noop",
+            model="demo-model",
+            usage={},
+            delta={},
+            finish_reason=None,
+            error=None,
+        ))
+        self.assertEqual([], events)
+
+        eof_events = state.finish_eof()
+        self.assertEqual("upstream_eof_no_finish", eof_events[0].reason)
+        self.assertIn("dropped", eof_events[0].message)
+
+    def test_usage_only_chunk_does_not_emit_message_start_before_visible_content(self):
+        state = TranslationState()
+        events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_usage",
+            model="demo-model",
+            usage={"prompt_tokens": 7, "completion_tokens": 0},
+            delta={},
+            finish_reason=None,
+            error=None,
+        ))
+        self.assertEqual([], events)
+
+        next_events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_usage",
+            model="demo-model",
+            usage={"prompt_tokens": 7, "completion_tokens": 1},
+            delta={"content": "Hello"},
+            finish_reason=None,
+            error=None,
+        ))
+        self.assertIsInstance(next_events[0], MessageStart)
+        self.assertTrue(any(isinstance(evt, TextDelta) for evt in next_events))
+
+    def test_finish_only_empty_completion_is_suppressed(self):
+        state = TranslationState()
+        events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_empty",
+            model="demo-model",
+            usage={"prompt_tokens": 2, "completion_tokens": 0},
+            delta={},
+            finish_reason="stop",
+            error=None,
+        ))
+        self.assertEqual([], events)
+        self.assertEqual([], state.finish_eof())
+
+    def test_whitespace_only_text_is_buffered_until_next_visible_text(self):
+        state = TranslationState()
+        first_events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_ws2",
+            model="demo-model",
+            usage={"prompt_tokens": 1, "completion_tokens": 0},
+            delta={"content": "Hello"},
+            finish_reason=None,
+            error=None,
+        ))
+        self.assertTrue(any(isinstance(evt, TextDelta) and evt.text == "Hello" for evt in first_events))
+
+        gap_events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_ws2",
+            model="demo-model",
+            usage={"prompt_tokens": 1, "completion_tokens": 0},
+            delta={"content": "\n\n"},
+            finish_reason=None,
+            error=None,
+        ))
+        self.assertEqual([], gap_events)
+
+        next_events = state.apply_chunk(OpenAIChunk(
+            chunk_id="chatcmpl_ws2",
+            model="demo-model",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+            delta={"content": "World"},
+            finish_reason="stop",
+            error=None,
+        ))
+        text_events = [evt for evt in next_events if isinstance(evt, TextDelta)]
+        self.assertEqual(1, len(text_events))
+        self.assertEqual("\n\nWorld", text_events[0].text)
+
 
 if __name__ == "__main__":
     unittest.main()

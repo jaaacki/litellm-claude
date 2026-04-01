@@ -1,11 +1,8 @@
 import logging
-import requests
 try:
-    from .. import config
-    from .base import BaseProvider, Status, is_placeholder
+    from .base import BaseProvider, Status
 except ImportError:
-    import config
-    from providers.base import BaseProvider, Status, is_placeholder
+    from providers.base import BaseProvider, Status
 
 log = logging.getLogger("litellm-cli.minimax")
 
@@ -42,30 +39,15 @@ class MiniMaxProvider(BaseProvider):
     API_BASE = "https://api.minimax.io"
 
     def validate(self):
-        api_key = config.get_env("MINIMAX_API_KEY")
-        if not api_key or is_placeholder(api_key):
-            return Status.NOT_CONFIGURED, "MINIMAX_API_KEY not set"
-
         probe_model = next(iter(self.models))
-        log.debug("Validating MiniMax key with model %s", probe_model)
-
-        try:
-            resp = requests.post(
-                f"{self.API_BASE}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}",
-                         "Content-Type": "application/json"},
-                json={"model": probe_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
-                timeout=10,
-            )
-        except requests.RequestException as e:
-            return Status.UNREACHABLE, f"Cannot reach MiniMax API: {e}"
-
-        status, msg = self._classify_response(resp)
-        if status == Status.OK:
-            return status, "Authenticated with MiniMax"
-        if status == Status.INVALID and resp.status_code in (401, 403):
-            return status, "Invalid MINIMAX_API_KEY"
-        return status, msg
+        return self._validate_openai_compatible_api_key(
+            env_var="MINIMAX_API_KEY",
+            api_base=f"{self.API_BASE}/v1",
+            model=probe_model,
+            provider_label="MiniMax",
+            success_message="Authenticated with MiniMax",
+            invalid_message="Invalid MINIMAX_API_KEY",
+        )
 
     login_prompts = {
         "api_key": {

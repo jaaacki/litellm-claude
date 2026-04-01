@@ -7,9 +7,11 @@ import re
 try:
     from gateway.proxy_v2.contracts import map_openai_finish_reason
     from gateway.proxy_v2.errors import ProxyError
+    from gateway.proxy_v2.tool_repair import repair_tool_call
 except ImportError:
     from proxy_v2.contracts import map_openai_finish_reason
     from proxy_v2.errors import ProxyError
+    from proxy_v2.tool_repair import repair_tool_call
 
 log = logging.getLogger("litellm-proxy.v2.response_translate")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
@@ -81,19 +83,16 @@ def serialize_anthropic_message(message):
 def _extract_visible_text(message):
     if "content" in message:
         return strip_think_tags(message.get("content") or "")
-    reasoning_text = message.get("reasoning_content")
-    if reasoning_text:
-        return strip_think_tags(reasoning_text)
     return ""
 
 
 def _tool_call_to_anthropic_content_block(tool_call):
     function = tool_call.get("function") or {}
+    tool_name = function.get("name", "")
     raw_arguments = function.get("arguments", "{}")
     try:
         arguments = json.loads(raw_arguments)
     except (TypeError, ValueError):
-        tool_name = function.get("name", "unknown")
         log.warning(
             "Malformed tool arguments from upstream (tool=%s): %s",
             tool_name,
@@ -103,8 +102,8 @@ def _tool_call_to_anthropic_content_block(tool_call):
             "type": "text",
             "text": "[Tool call failed: malformed arguments for %s]" % tool_name,
         }
+    repaired_arguments, _, _ = repair_tool_call(tool_name, arguments, raw_arguments)
     if not isinstance(arguments, dict):
-        tool_name = function.get("name", "unknown")
         log.warning(
             "Non-object tool arguments from upstream (tool=%s): %s",
             tool_name,
@@ -117,6 +116,6 @@ def _tool_call_to_anthropic_content_block(tool_call):
     return {
         "type": "tool_use",
         "id": tool_call.get("id", ""),
-        "name": function.get("name", ""),
-        "input": arguments,
+        "name": tool_name,
+        "input": repaired_arguments,
     }

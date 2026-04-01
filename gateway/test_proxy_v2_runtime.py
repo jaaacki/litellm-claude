@@ -30,6 +30,17 @@ class ProxyV2RuntimeTests(unittest.TestCase):
         self.assertIn(b"event: content_block_delta", output)
         self.assertIn(b"event: message_stop", output)
 
+    def test_translate_stream_ignores_leading_whitespace_only_text_deltas(self):
+        upstream_chunks = [
+            b'data: {"id":"chatcmpl_ws","model":"demo","choices":[{"delta":{"content":"\\n\\n  "},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":0}}\n\n',
+            b'data: {"id":"chatcmpl_ws","model":"demo","choices":[{"delta":{"content":"Hello"},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+            b'data: {"id":"chatcmpl_ws","model":"demo","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        output = b"".join(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
+        self.assertEqual(1, output.count(b"event: content_block_start"))
+        self.assertIn(b'"text": "Hello"', output)
+
     def test_translate_stream_treats_done_without_finish_as_abort(self):
         upstream_chunks = [
             b'data: {"id":"chatcmpl_1","model":"demo","choices":[{"delta":{"content":"Hello"},"finish_reason":null}],"usage":{"prompt_tokens":1,"completion_tokens":0}}\n\n',
@@ -38,6 +49,15 @@ class ProxyV2RuntimeTests(unittest.TestCase):
         output = b"".join(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
         self.assertIn(b"event: error", output)
         self.assertNotIn(b"event: message_stop", output)
+
+    def test_translate_stream_surfaces_noop_chunk_gap_as_abort_message(self):
+        upstream_chunks = [
+            b'data: {"id":"chatcmpl_noop","model":"demo","choices":[{"delta":{},"finish_reason":null}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        output = b"".join(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
+        self.assertIn(b"event: error", output)
+        self.assertIn(b"dropped", output)
 
     def test_translate_stream_handles_tool_args_before_tool_metadata(self):
         upstream_chunks = [
@@ -48,6 +68,24 @@ class ProxyV2RuntimeTests(unittest.TestCase):
         output = b"".join(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
         self.assertIn(b"lookup_weather", output)
         self.assertIn(b"event: message_stop", output)
+
+    def test_translate_stream_batches_message_start_with_first_tool_event(self):
+        upstream_chunks = [
+            b'data: {"id":"chatcmpl_tool_batch","model":"demo","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup_weather","arguments":"{\\"city\\": \\"Singapore\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        payloads = list(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
+        self.assertGreaterEqual(len(payloads), 1)
+        self.assertIn(b"event: message_start", payloads[0])
+        self.assertIn(b"event: content_block_start", payloads[0])
+
+    def test_translate_stream_repairs_send_message_missing_summary(self):
+        upstream_chunks = [
+            b'data: {"id":"chatcmpl_send","model":"demo","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"SendMessage","arguments":"{\\"to\\":\\"agent-1\\",\\"message\\":\\"{\\\\\\"type\\\\\\":\\\\\\"shutdown_request\\\\\\",\\\\\\"reason\\\\\\":\\\\\\"done\\\\\\"}\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+        output = b"".join(translate_stream(upstream_chunks, abort_signal=lambda: False, logger=None))
+        self.assertIn(b"Shutdown now", output)
 
     def test_decode_openai_chunk_rejects_missing_choices(self):
         with self.assertRaises(ProxyError):

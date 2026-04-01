@@ -38,22 +38,35 @@ def translate_stream(upstream_byte_iterable, *, abort_signal, logger):
     try:
         for raw_chunk in upstream_byte_iterable:
             if abort_signal and abort_signal():
-                for payload in writer.write(state.abort("server_shutdown")):
+                payload = _coalesce_payloads(writer.write(state.abort("server_shutdown")))
+                if payload:
                     yield payload
                 return
 
             for frame in parser.feed(raw_chunk):
                 if frame.data == "[DONE]":
-                    for payload in writer.write(state.finish_eof()):
+                    payload = _coalesce_payloads(writer.write(state.finish_eof()))
+                    if payload:
                         yield payload
                     return
-                for payload in writer.write(state.apply_chunk(decode_openai_chunk(frame.data))):
+                payload = _coalesce_payloads(writer.write(state.apply_chunk(decode_openai_chunk(frame.data))))
+                if payload:
                     yield payload
 
         parser.finish()
-        for payload in writer.write(state.finish_eof()):
+        payload = _coalesce_payloads(writer.write(state.finish_eof()))
+        if payload:
             yield payload
     except ProxyError as exc:
         stream_log.error("V2 translated stream aborted: %s", exc.message)
-        for payload in writer.write(state.abort(exc.code or "upstream_error", message=exc.message)):
+        payload = _coalesce_payloads(writer.write(state.abort(exc.code or "upstream_error", message=exc.message)))
+        if payload:
             yield payload
+
+
+def _coalesce_payloads(payloads):
+    if not payloads:
+        return b""
+    if len(payloads) == 1:
+        return payloads[0]
+    return b"".join(payloads)

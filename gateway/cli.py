@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+import json
 import logging
-import sys
 import os
+import sys
+import time
 
 from container import PROXY_PORT as PORT
 from providers.base import Status
 
 log = logging.getLogger("litellm-cli")
+MODEL_ALIAS_STATE_FILE = os.environ.get("PROXY_MODEL_ALIAS_STATE", "/tmp/litellm-proxy-model-alias.json")
 
 _STATUS_ICON = {
     Status.OK: "\u2713",
@@ -34,6 +37,40 @@ def _setup_logging(verbose=False):
 def _eprint(*args, **kwargs):
     """Print to stderr (for interactive prompts that shouldn't mix with stdout data)."""
     print(*args, file=sys.stderr, **kwargs)
+
+
+def _thinking_level_label(level, contract):
+    labels = (contract or {}).get("level_labels") or {}
+    return labels.get(level, level.replace("_", " ").title())
+
+
+def _thinking_level_description(level):
+    descriptions = {
+        "none": "No additional reasoning",
+        "minimal": "Fastest responses with minimal reasoning",
+        "low": "Fast responses with lighter reasoning",
+        "medium": "Balances speed and reasoning depth for everyday tasks",
+        "high": "Greater reasoning depth for complex problems",
+        "xhigh": "Extra high reasoning depth for complex problems",
+    }
+    return descriptions.get(level, "")
+
+
+def _persist_selected_model_state(alias):
+    """Persist the active Claude-tier mapping for the proxy control plane."""
+    state = {
+        "selected_model": alias,
+        "anthropic_defaults": {
+            "haiku": alias,
+            "sonnet": alias,
+            "opus": alias,
+        },
+        "updated_at": int(time.time()),
+    }
+    tmp_path = f"{MODEL_ALIAS_STATE_FILE}.tmp.{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp_path, MODEL_ALIAS_STATE_FILE)
 
 
 def show_help():
@@ -75,7 +112,7 @@ SUBCOMMAND_REGISTRY = {
         "logout": (None, "logout [name]", "Remove provider credentials"),
     },
     "launch": {
-        "claude": (None, "claude [--provider X] [--model Y] [--thinking low|medium|high] [--telegram|--no-telegram] [--emit-env <path>] [-- args...]", "Launch Claude Code through the proxy"),
+        "claude": (None, "claude [--provider X] [--model Y] [--thinking <level>] [--telegram|--no-telegram] [--emit-env <path>] [-- args...]", "Launch Claude Code through the proxy"),
     },
 }
 
@@ -602,17 +639,12 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     import shutil
     import config
     import container
+    import providers
 
     extra_args = extra_args or []
     emit_env = _kwargs.get("emit_env")
     # Use _eprint for interactive output so it doesn't pollute stdout in --emit-env mode
     out = _eprint if emit_env else print
-
-    # Validate thinking effort
-    if thinking and thinking not in ("low", "medium", "high"):
-        out(f"  \u2717 Invalid thinking effort: {thinking}")
-        out(f"  Valid options: low, medium, high")
-        sys.exit(1)
 
     # Step 1: Check claude binary (skip in --emit-env mode)
     claude_bin = None
@@ -632,7 +664,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     cs, _ = container.status()
     if cs != Status.OK:
         out("  \u26a0 LiteLLM backend not yet reachable (may still be starting)")
-        out("    Claude will work once LiteLLM finishes initializing")
+        out("    If upstream auth is pending, you can finish it after model selection")
 
     # Step 3: Pick model — skip provider validation for speed
     configured_models = config.list_models()
@@ -695,23 +727,60 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             out("  Invalid choice.")
             sys.exit(1)
 
+    # Step 4: Validate the selected model's provider before any more prompts.
+    provider = providers.get_provider(model["provider"])
+    if not provider:
+        out(f"  ✗ Unknown provider '{model['provider']}' for model '{model['alias']}'.")
+        sys.exit(1)
+
+    provider_status, provider_msg = provider.validate()
+    if provider_status not in (Status.OK, Status.UNVERIFIED):
+        out(f"  ✗ {model['alias']} is not ready: {provider_msg}")
+        if provider.auth_types:
+            out(f"    Run: ./proclaude.sh provider login {provider.name}")
+        sys.exit(1)
+
+    if provider_status == Status.UNVERIFIED:
+        out(f"  ? {provider_msg}")
+
     # Step 5: Thinking effort (interactive if the selected model has a verified contract)
     thinking_contract = config.resolve_thinking_contract(model)
+    supported_levels = tuple((thinking_contract or {}).get("levels") or ())
     if thinking and not thinking_contract:
         out(f"  ✗ Thinking effort is not supported for model '{model['alias']}'.")
         out("    The configured upstream route is not verified for thinking control.")
         sys.exit(1)
+    if thinking and supported_levels and thinking not in supported_levels:
+        labels = ", ".join(_thinking_level_label(level, thinking_contract) for level in supported_levels)
+        out(f"  ✗ Invalid thinking effort '{thinking}' for model '{model['alias']}'.")
+        out(f"    Valid options: {labels}")
+        sys.exit(1)
 
     if not thinking and thinking_contract:
-        out(f"\n  Thinking effort:\n")
-        out(f"    [1] low")
-        out(f"    [2] medium")
-        out(f"    [3] high")
-        out("")
-        tc = input("  Choose (Enter for default): ").strip()
-        thinking_map = {"1": "low", "2": "medium", "3": "high"}
-        if tc in thinking_map:
-            thinking = thinking_map[tc]
+        default_level = thinking_contract.get("default_level")
+        if len(supported_levels) == 1:
+            thinking = supported_levels[0]
+            out(f"  Thinking effort: {_thinking_level_label(thinking, thinking_contract)}")
+        else:
+            out(f"\n  Thinking effort:\n")
+            for i, level in enumerate(supported_levels, 1):
+                label = _thinking_level_label(level, thinking_contract)
+                default_suffix = " (default)" if level == default_level else ""
+                description = _thinking_level_description(level)
+                if description:
+                    out(f"    [{i}] {label}{default_suffix}  {description}")
+                else:
+                    out(f"    [{i}] {label}{default_suffix}")
+            out("")
+            tc = input("  Choose (Enter for default): ").strip()
+            if not tc:
+                thinking = default_level
+            else:
+                try:
+                    thinking = supported_levels[int(tc) - 1]
+                except (ValueError, IndexError):
+                    out("  Invalid choice.")
+                    sys.exit(1)
 
     # Step 6: Read master key
     try:
@@ -731,11 +800,13 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
 
     # Check for --emit-env mode (used by proclaude.sh to get env without exec'ing)
     alias = model["alias"]
+    _persist_selected_model_state(alias)
     if emit_env:
         with open(emit_env, "w") as f:
             f.write(f"export ANTHROPIC_BASE_URL='http://localhost:{PORT}'\n")
             f.write(f"export ANTHROPIC_AUTH_TOKEN='{master_key}'\n")
             f.write(f"export ANTHROPIC_MODEL='{alias}'\n")
+            f.write(f"export CLAUDE_SELECTED_PROVIDER='{model['provider']}'\n")
             # Map all Claude Code model tiers to the selected model
             f.write(f"export ANTHROPIC_DEFAULT_HAIKU_MODEL='{alias}'\n")
             f.write(f"export ANTHROPIC_DEFAULT_SONNET_MODEL='{alias}'\n")

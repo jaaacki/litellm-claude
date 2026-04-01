@@ -64,6 +64,11 @@ class TranslationState:
         self._visible_text = []
         self._final_stop_reason = None
         self._tool_calls = {}
+        self._noop_chunk_count = 0
+        self._logged_noop_warning = False
+        self._visible_non_whitespace_text = False
+        self._emitted_semantic_content = False
+        self._pending_whitespace_text = ""
 
     def apply_chunk(self, chunk):
         if self._stopped or self._aborted:
@@ -73,19 +78,42 @@ class TranslationState:
             return self.abort("upstream_error", message=_error_message(chunk.error))
 
         events = []
-        events.extend(self._ensure_started(chunk))
-        events.extend(self._apply_usage(chunk.usage or {}))
-        events.extend(self._apply_text(chunk.delta or {}))
+        self._prime_message_metadata(chunk)
+        usage_changed = self._update_usage(chunk.usage or {})
+        text_events = self._apply_text(chunk.delta or {})
 
         tool_events, tool_abort = self._apply_tool_calls(chunk.delta or {})
+        if text_events or tool_events:
+            self._emitted_semantic_content = True
+        should_start = bool(text_events or tool_events)
+        if should_start and not self._started:
+            events.extend(self._start_message())
+        if self._started and usage_changed:
+            events.append(UsageDelta(input_tokens=self._input_tokens, output_tokens=self._output_tokens))
+        events.extend(text_events)
         events.extend(tool_events)
         if tool_abort is not None:
             return events + self.abort(tool_abort)
+
+        if self._is_noop_chunk(chunk):
+            self._noop_chunk_count += 1
+            if not self._logged_noop_warning:
+                self._logged_noop_warning = True
+                log.warning(
+                    "Observed upstream no-op translated chunk; upstream event metadata may have been dropped "
+                    "(chunk_id=%s model=%s)",
+                    chunk.chunk_id or "unknown",
+                    chunk.model or "unknown",
+                )
 
         if chunk.finish_reason:
             if self._has_incomplete_tool_calls():
                 log.error("finish_reason=%s arrived before tool arguments completed", chunk.finish_reason)
                 return events + self.abort("incomplete_tool_args")
+            if not self._started and not self._emitted_semantic_content:
+                self._stopped = True
+                self._final_stop_reason = map_openai_finish_reason(chunk.finish_reason)
+                return events
             self._stopped = True
             self._final_stop_reason = map_openai_finish_reason(chunk.finish_reason)
             events.append(MessageStop(
@@ -97,6 +125,14 @@ class TranslationState:
     def finish_eof(self):
         if self._stopped or self._aborted:
             return []
+        if self._noop_chunk_count:
+            return self.abort(
+                "upstream_eof_no_finish",
+                message=(
+                    "Upstream stream ended without a finish reason after empty translated chunks; "
+                    "upstream event metadata may have been dropped"
+                ),
+            )
         return self.abort("upstream_eof_no_finish")
 
     def abort(self, reason, *, message=None):
@@ -105,40 +141,52 @@ class TranslationState:
         self._aborted = True
         return [Abort(reason=reason, message=message)]
 
-    def _ensure_started(self, chunk):
+    def _start_message(self):
         if self._started:
             return []
         self._started = True
-        self._message_id = chunk.chunk_id or "msg_translated"
-        self._model = chunk.model or ""
-        self._input_tokens = int((chunk.usage or {}).get("prompt_tokens", 0) or 0)
         return [MessageStart(
             message_id=self._message_id,
             model=self._model,
             input_tokens=self._input_tokens,
         )]
 
-    def _apply_usage(self, usage):
+    def _prime_message_metadata(self, chunk):
+        self._message_id = chunk.chunk_id or "msg_translated"
+        self._model = chunk.model or ""
+        if not self._started:
+            self._input_tokens = int((chunk.usage or {}).get("prompt_tokens", self._input_tokens) or 0)
+
+    def _update_usage(self, usage):
         if not usage:
-            return []
+            return False
         input_tokens = int(usage.get("prompt_tokens", self._input_tokens) or 0)
         output_tokens = int(usage.get("completion_tokens", self._output_tokens) or 0)
-        if input_tokens == self._input_tokens and output_tokens == self._output_tokens:
-            return []
+        changed = not (input_tokens == self._input_tokens and output_tokens == self._output_tokens)
         self._input_tokens = input_tokens
         self._output_tokens = output_tokens
-        return [UsageDelta(input_tokens=input_tokens, output_tokens=output_tokens)]
+        return changed
 
     def _apply_text(self, delta):
         text = ""
         if "content" in delta:
             text = delta.get("content") or ""
-        elif delta.get("reasoning_content"):
-            text = delta.get("reasoning_content") or ""
         if not text:
             return []
-        self._visible_text.append(text)
-        return [TextDelta(text=text)]
+        if not text.strip():
+            self._pending_whitespace_text += text
+            return []
+
+        if self._visible_non_whitespace_text:
+            emit_text = self._pending_whitespace_text + text
+        else:
+            emit_text = text.lstrip()
+        self._pending_whitespace_text = ""
+        if not emit_text:
+            return []
+        self._visible_non_whitespace_text = True
+        self._visible_text.append(emit_text)
+        return [TextDelta(text=emit_text)]
 
     def _apply_tool_calls(self, delta):
         events = []
@@ -181,6 +229,13 @@ class TranslationState:
             (buf.started or buf.arguments_buffer) and not buf.completed
             for buf in self._tool_calls.values()
         )
+
+    def _is_noop_chunk(self, chunk):
+        if chunk.finish_reason or chunk.error:
+            return False
+        if chunk.usage:
+            return False
+        return not (chunk.delta or {})
 
     def to_anthropic_message(self):
         if self._aborted:

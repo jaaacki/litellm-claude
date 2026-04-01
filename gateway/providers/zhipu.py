@@ -1,13 +1,11 @@
 import logging
 
-import requests
-
 try:
     from .. import config
-    from .base import BaseProvider, Status, is_placeholder
+    from .base import BaseProvider, Status
 except ImportError:
     import config
-    from providers.base import BaseProvider, Status, is_placeholder
+    from providers.base import BaseProvider, Status
 
 log = logging.getLogger("litellm-cli.zhipu")
 
@@ -40,30 +38,15 @@ class ZhipuProvider(BaseProvider):
         return None
 
     def validate(self):
-        api_key = config.get_env("ZAI_API_KEY")
-        if not api_key or is_placeholder(api_key):
-            return Status.NOT_CONFIGURED, "ZAI_API_KEY not set"
-
         probe_model = next(iter(self.models))
-        log.debug("Validating Z.AI credentials with model %s", probe_model)
-
-        try:
-            resp = requests.post(
-                f"{self.API_BASE}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}",
-                         "Content-Type": "application/json"},
-                json={"model": probe_model,
-                      "messages": [{"role": "user", "content": "hi"}],
-                      "max_tokens": 1},
-                timeout=10,
-            )
-        except requests.RequestException as e:
-            return Status.UNREACHABLE, f"Cannot reach Z.AI API: {e}"
-
-        status, _ = self._classify_response(resp)
-        if status == Status.OK:
-            return status, "Authenticated with Z.AI"
-        return status, _
+        return self._validate_openai_compatible_api_key(
+            env_var="ZAI_API_KEY",
+            api_base=self.API_BASE,
+            model=probe_model,
+            provider_label="Z.AI",
+            success_message="Authenticated with Z.AI",
+            invalid_message="Invalid ZAI_API_KEY",
+        )
 
     login_prompts = {
         "api_key": {
