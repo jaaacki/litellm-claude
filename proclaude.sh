@@ -108,12 +108,6 @@ fi
 
 _ensure_docker
 
-# Ensure mount-point directories exist (gitignored, must be created at runtime)
-mkdir -p "$DIR/auth/chatgpt" "$DIR/data" "$DIR/data/gateway"
-
-CMD="$1"
-shift
-
 _ensure_env() {
     # Ensure .env exists and has a master key (pure bash, no Python)
     if [ ! -f "$DIR/.env" ]; then
@@ -136,9 +130,15 @@ _ensure_env() {
     fi
 }
 
+# Ensure mount-point directories and .env exist (runs for every command)
+mkdir -p "$DIR/auth/chatgpt" "$DIR/data" "$DIR/data/gateway"
+_ensure_env
+
+CMD="$1"
+shift
+
 case "$CMD" in
     start)
-        _ensure_env
         echo "  Starting services..."
         _docker_compose up -d --build
         _wait_for_gateway
@@ -172,7 +172,6 @@ case "$CMD" in
     provider)
         if [ "${1:-}" = "login" ] && [ "${2:-}" = "openai" ]; then
             if ! _gateway_running; then
-                _ensure_env
                 echo "  Starting services..."
                 _docker_compose up -d --build
                 _wait_for_gateway
