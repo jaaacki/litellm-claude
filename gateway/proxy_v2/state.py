@@ -209,7 +209,7 @@ class TranslationState:
                     self._think_buf = self._think_buf[end + 8:]
                     self._in_think = False
                     self._past_think = True
-                    remaining = self._think_buf.lstrip()
+                    remaining = self._think_buf
                     self._think_buf = ""
                     if remaining:
                         result.append(remaining)
@@ -332,9 +332,7 @@ def _error_message(error):
 def _normalize_pending_whitespace(text):
     if not text:
         return ""
-    if "\n" in text or "\r" in text:
-        return ""
-    return " "
+    return text
 
 
 class OpenAIStreamState:
