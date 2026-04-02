@@ -688,6 +688,17 @@ def _launch_inline_setup(entry, out):
     The shell script writes them to .env on the host side.
     """
     provider = entry["provider_obj"]
+
+    # Browser OAuth (OpenAI) — must check BEFORE api_key prompts
+    if "browser_oauth" in getattr(provider, "auth_types", []):
+        global _needs_browser_oauth
+        out("  OpenAI requires browser login. Will set up after prompts...")
+        entry["ready"] = True
+        entry["_needs_restart"] = True
+        _needs_browser_oauth = True
+        return True
+
+    # API key auth — prompt for credentials
     for auth_type, prompts in getattr(provider, "login_prompts", {}).items():
         if not prompts or not prompts.get("fields"):
             continue
@@ -707,14 +718,6 @@ def _launch_inline_setup(entry, out):
         entry["_needs_restart"] = True
         return True
 
-    # Browser OAuth (OpenAI) — signal to shell to handle host-side
-    if "browser_oauth" in getattr(provider, "auth_types", []):
-        global _needs_browser_oauth
-        out("  OpenAI requires browser login. Will set up after prompts...")
-        entry["ready"] = True
-        entry["_needs_restart"] = True
-        _needs_browser_oauth = True
-        return True
     out(f"  {entry['ready_reason']}")
     return False
 
