@@ -820,21 +820,9 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
         if s == Status.OK:
             out(f"  Added {model['alias']} to config")
 
-    # Step 4: Provider validation (full network check for the selected model).
-    provider = providers.get_provider(model["provider"])
-    if not provider:
-        out(f"  Unknown provider '{model['provider']}'.")
-        sys.exit(1)
-
-    provider_status, provider_msg = provider.validate()
-    if provider_status not in (Status.OK, Status.UNVERIFIED):
-        out(f"  {model['alias']} is not ready: {provider_msg}")
-        if provider.auth_types:
-            out(f"    Run: ./proclaude.sh provider login {provider.name}")
-        sys.exit(1)
-
-    if provider_status == Status.UNVERIFIED:
-        out(f"  ? {provider_msg}")
+    # Step 4: skip — check_ready() already validated credentials locally.
+    # Full network validation (validate()) is too slow and depends on LiteLLM
+    # being reachable, which isn't guaranteed during first boot.
 
     # Step 5: Thinking effort (interactive if the selected model has a verified contract)
     thinking_contract = config.resolve_thinking_contract(model)
