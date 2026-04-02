@@ -677,6 +677,7 @@ def cmd_model_rm(provider_flag=None, model_flag=None, extra_args=None):
 
 # Credentials collected during inline setup — written to emit-env for host-side .env update
 _pending_credentials = {}
+_needs_browser_oauth = False
 
 
 def _launch_inline_setup(entry, out):
@@ -706,11 +707,14 @@ def _launch_inline_setup(entry, out):
         entry["_needs_restart"] = True
         return True
 
-    # No login_prompts (e.g. browser OAuth or Ollama)
+    # Browser OAuth (OpenAI) — signal to shell to handle host-side
     if "browser_oauth" in getattr(provider, "auth_types", []):
-        out("  OpenAI browser auth required.")
-        out("    Run: ./proclaude.sh provider login openai")
-        return False
+        global _needs_browser_oauth
+        out("  OpenAI requires browser login. Will set up after prompts...")
+        entry["ready"] = True
+        entry["_needs_restart"] = True
+        _needs_browser_oauth = True
+        return True
     out(f"  {entry['ready_reason']}")
     return False
 
@@ -955,6 +959,8 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             f.write(f"LAUNCH_CMD='{cmd_parts}'\n")
             if _credentials_changed:
                 f.write("NEEDS_RESTART=1\n")
+            if _needs_browser_oauth:
+                f.write("NEEDS_BROWSER_OAUTH=1\n")
             # Pass collected credentials to shell for host-side .env write
             for cred_key, cred_val in _pending_credentials.items():
                 f.write(f"export SET_ENV_{cred_key}='{cred_val}'\n")

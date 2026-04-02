@@ -276,7 +276,45 @@ case "$CMD" in
             _wait_for_gateway
         fi
 
-        # For OpenAI browser OAuth: check if auth is pending
+        # OpenAI browser OAuth: trigger device-code flow and guide user through it
+        if [ "${NEEDS_BROWSER_OAUTH:-}" = "1" ]; then
+            # Trigger the auth flow — LiteLLM emits device code after a real request
+            _gateway_exec python cli.py provider openai-browser-trigger $VERBOSE 2>/dev/null || true
+            echo ""
+            echo "  Waiting for login instructions from LiteLLM..."
+            login_url=""
+            for _ in $(seq 1 30); do
+                login_url=$(_docker_compose logs --tail 80 litellm 2>&1 | grep -o 'https://auth\.openai\.com/[^ "]*' | tail -1)
+                [ -n "$login_url" ] && break
+                printf "." >&2
+                sleep 2
+            done
+            if [ -n "$login_url" ]; then
+                device_code=$(_docker_compose logs --tail 80 litellm 2>&1 | grep -o 'Enter code: [A-Z0-9-]*' | tail -1 | sed 's/Enter code: //')
+                echo ""
+                echo "  ┌─────────────────────────────────────────────────────┐"
+                echo "  │  OpenAI Login Required                              │"
+                echo "  │                                                     │"
+                printf "  │  1) Visit:  %-42s│\n" "$login_url"
+                printf "  │  2) Enter code:  %-36s│\n" "$device_code"
+                echo "  │                                                     │"
+                echo "  └─────────────────────────────────────────────────────┘"
+                echo ""
+                echo "  Complete the login in your browser, then wait..."
+                for _ in $(seq 1 100); do
+                    if curl -s -o /dev/null -w '%{http_code}' http://localhost:2555/health/readiness 2>/dev/null | grep -q 200; then
+                        echo "  ✓ LiteLLM is ready"
+                        break
+                    fi
+                    sleep 3
+                done
+            else
+                echo ""
+                echo "  ⚠ Could not find OpenAI login URL. Check './proclaude.sh logs litellm'"
+            fi
+        fi
+
+        # For OpenAI browser OAuth on subsequent launches: check if auth is pending
         if [ "${CLAUDE_SELECTED_PROVIDER:-}" = "openai" ]; then
             if ! curl -s -o /dev/null -w '%{http_code}' http://localhost:2555/health/readiness 2>/dev/null | grep -q 200; then
                 auth_url=$(_docker_compose logs --tail 30 litellm 2>&1 | grep -o 'https://auth\.openai\.com/[^ "]*' | tail -1)
