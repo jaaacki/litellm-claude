@@ -45,16 +45,26 @@ def translate_stream(upstream_byte_iterable, *, abort_signal, logger):
 
             for frame in parser.feed(raw_chunk):
                 if frame.data == "[DONE]":
-                    payload = _coalesce_payloads(writer.write(state.finish_eof()))
+                    events = state.finish_eof()
+                    if events:
+                        stream_log.debug("V2 [DONE] events: %s", [type(e).__name__ for e in events])
+                    payload = _coalesce_payloads(writer.write(events))
                     if payload:
                         yield payload
                     return
-                payload = _coalesce_payloads(writer.write(state.apply_chunk(decode_openai_chunk(frame.data))))
+                chunk = decode_openai_chunk(frame.data)
+                events = state.apply_chunk(chunk)
+                if events:
+                    stream_log.debug("V2 chunk events: %s (finish=%s)", [type(e).__name__ for e in events], chunk.finish_reason)
+                payload = _coalesce_payloads(writer.write(events))
                 if payload:
                     yield payload
 
         parser.finish()
-        payload = _coalesce_payloads(writer.write(state.finish_eof()))
+        events = state.finish_eof()
+        if events:
+            stream_log.debug("V2 EOF events: %s", [type(e).__name__ for e in events])
+        payload = _coalesce_payloads(writer.write(events))
         if payload:
             yield payload
     except ProxyError as exc:

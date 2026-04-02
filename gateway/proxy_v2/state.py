@@ -69,6 +69,10 @@ class TranslationState:
         self._visible_non_whitespace_text = False
         self._emitted_semantic_content = False
         self._pending_whitespace_text = ""
+        # Think-tag state machine: suppress <think>...</think> blocks
+        self._in_think = False
+        self._think_buf = ""
+        self._past_think = False
 
     def apply_chunk(self, chunk):
         if self._stopped or self._aborted:
@@ -110,12 +114,13 @@ class TranslationState:
             if self._has_incomplete_tool_calls():
                 log.error("finish_reason=%s arrived before tool arguments completed", chunk.finish_reason)
                 return events + self.abort("incomplete_tool_args")
-            if not self._started and not self._emitted_semantic_content:
-                self._stopped = True
-                self._final_stop_reason = map_openai_finish_reason(chunk.finish_reason)
-                return events
             self._stopped = True
             self._final_stop_reason = map_openai_finish_reason(chunk.finish_reason)
+            # Always emit MessageStart + MessageStop so the client sees a
+            # complete message lifecycle, even if think-tag filtering ate
+            # all visible content.
+            if not self._started:
+                events.extend(self._start_message())
             events.append(MessageStop(
                 stop_reason=self._final_stop_reason,
                 output_tokens=self._output_tokens,
@@ -168,9 +173,12 @@ class TranslationState:
         return changed
 
     def _apply_text(self, delta):
-        text = ""
+        raw = ""
         if "content" in delta:
-            text = delta.get("content") or ""
+            raw = delta.get("content") or ""
+        if not raw:
+            return []
+        text = self._filter_think_tags(raw)
         if not text:
             return []
         if not text.strip():
@@ -187,6 +195,44 @@ class TranslationState:
         self._visible_non_whitespace_text = True
         self._visible_text.append(emit_text)
         return [TextDelta(text=emit_text)]
+
+    def _filter_think_tags(self, text):
+        """Strip <think>...</think> blocks incrementally across chunks."""
+        if self._past_think:
+            return text
+        self._think_buf += text
+        result = []
+        while self._think_buf:
+            if self._in_think:
+                end = self._think_buf.find("</think>")
+                if end >= 0:
+                    self._think_buf = self._think_buf[end + 8:]
+                    self._in_think = False
+                    self._past_think = True
+                    remaining = self._think_buf.lstrip()
+                    self._think_buf = ""
+                    if remaining:
+                        result.append(remaining)
+                    return "".join(result)
+                else:
+                    self._think_buf = ""
+                    return "".join(result)
+            else:
+                start = self._think_buf.find("<think>")
+                if start >= 0:
+                    before = self._think_buf[:start]
+                    if before.strip():
+                        result.append(before)
+                    self._think_buf = self._think_buf[start + 7:]
+                    self._in_think = True
+                elif "<" in self._think_buf and len(self._think_buf) < 7:
+                    return "".join(result)
+                else:
+                    self._past_think = True
+                    result.append(self._think_buf)
+                    self._think_buf = ""
+                    return "".join(result)
+        return "".join(result)
 
     def _apply_tool_calls(self, delta):
         events = []

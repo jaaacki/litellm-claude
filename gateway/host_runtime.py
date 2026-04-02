@@ -59,10 +59,17 @@ def _read_env_lines() -> list[str]:
 
 
 def _write_env_lines(lines: list[str]) -> None:
-    import shutil, stat
+    import shutil, stat, tempfile, os
     if ENV_PATH.exists():
         shutil.copy2(ENV_PATH, ENV_BACKUP)
-    ENV_PATH.write_text("".join(lines), encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(dir=str(ENV_PATH.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.writelines(lines)
+        os.replace(tmp, str(ENV_PATH))
+    except Exception:
+        os.unlink(tmp)
+        raise
     ENV_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
@@ -188,18 +195,51 @@ def _report_start_status(compose_file: str, gateway_url: str) -> int:
     status, _payload = _gateway_json(gateway_url, "/health/readiness")
     if status == 200:
         print("  ✓ LiteLLM backend is reachable")
-        return 0
+    else:
+        logs = _docker_compose_logs(compose_file, "litellm", tail=30)
+        url, code = _parse_auth_prompt(logs)
+        if url and code:
+            _print_auth_prompt(url, code)
+            print("  ⚠ LiteLLM is running, but upstream auth is still pending.")
+            print("    You can finish auth now or continue and do it during launch.")
+        else:
+            print("  ⚠ LiteLLM is running, but the backend is not yet reachable.")
+            print("    Check './proclaude.sh logs' if it does not finish initializing.")
 
-    logs = _docker_compose_logs(compose_file, "litellm", tail=30)
-    url, code = _parse_auth_prompt(logs)
-    if url and code:
-        _print_auth_prompt(url, code)
-        print("  ⚠ LiteLLM is running, but upstream auth is still pending.")
-        print("    You can finish auth now or continue and do it during launch.")
-        return 0
+    # Check provider auth status inside the container
+    try:
+        check_output = subprocess.check_output(
+            [
+                "docker", "compose", "-f", compose_file,
+                "exec", "-T", "gateway", "python", "-c",
+                "import config, os\n"
+                "from providers import all_providers\n"
+                "env_data = config.load_env_file(config.ENV_PATH)\n"
+                "auth_dir = os.path.join(config.DIR, 'auth')\n"
+                "for p in all_providers():\n"
+                "    if not p.models: continue\n"
+                "    ready, reason = p.check_ready(env_data, auth_dir=auth_dir)\n"
+                "    alias = next(iter(p.models))\n"
+                "    icon = 'ok' if ready else reason\n"
+                "    print(f'{alias}|{p.display_name}|{ready}|{icon}')\n",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        lines = [l.strip() for l in check_output.strip().splitlines() if l.strip()]
+        if lines:
+            print("")
+            print("  Models:")
+            for line in lines:
+                parts = line.split("|", 3)
+                if len(parts) == 4:
+                    alias, display, ready_str, reason = parts
+                    icon = "✓" if ready_str == "True" else "✗"
+                    label = "ready" if ready_str == "True" else reason
+                    print("    %s %-16s %-10s %s" % (icon, alias, display, label))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass  # Container not ready yet; skip auth report
 
-    print("  ⚠ LiteLLM is running, but the backend is not yet reachable.")
-    print("    Check './proclaude.sh logs' if it does not finish initializing.")
     return 0
 
 

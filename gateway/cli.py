@@ -764,7 +764,9 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             for i, e in enumerate(all_entries, 1):
                 out(f"    [{i}] {e['alias']:<16} {e['display_name']:<10}  {e['ready_reason']}")
             out("")
-            choice = input("  Choose: ").strip()
+            out("  Choose: ", end="")
+            sys.stderr.flush()
+            choice = input().strip()
             try:
                 entry = all_entries[int(choice) - 1]
             except (ValueError, IndexError):
@@ -791,7 +793,9 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
                 for e in not_ready:
                     out(f"    {e['alias']:<18} {e['display_name']:<10}  {e['ready_reason']}")
             out("")
-            choice = input("  Choose [1]: ").strip() or "1"
+            out("  Choose [1]: ", end="")
+            sys.stderr.flush()
+            choice = input().strip() or "1"
             try:
                 idx = int(choice) - 1
                 if idx < 0 or idx >= len(ready):
@@ -860,7 +864,9 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
                 else:
                     out(f"    [{i}] {label}{default_suffix}")
             out("")
-            tc = input("  Choose (Enter for default): ").strip()
+            out("  Choose (Enter for default): ", end="")
+            sys.stderr.flush()
+            tc = input().strip()
             if not tc:
                 thinking = default_level
             else:
@@ -880,7 +886,9 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     # Step 7: Telegram binding (skip prompt if flag was passed)
     telegram = _kwargs.get("telegram")
     if telegram is None:
-        telegram = input("\n  Bind session to Telegram? [y/N]: ").strip().lower() == "y"
+        out("\n  Bind session to Telegram? [y/N]: ", end="")
+        sys.stderr.flush()
+        telegram = input().strip().lower() == "y"
 
     # Step 8: Launch or print env
     log.debug("Launching Claude Code: model=%s provider=%s thinking=%s telegram=%s",

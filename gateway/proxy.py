@@ -403,7 +403,11 @@ def _load_model_alias_state():
 
 
 def _resolve_declared_anthropic_model(model_name):
-    """Normalize Claude tier names to the currently declared proxy alias."""
+    """Normalize Claude tier names to the currently declared proxy alias.
+
+    Falls back to the first configured model if no alias mapping exists,
+    so a fresh clone works without needing a prior launch to write state.
+    """
     if not isinstance(model_name, str) or not model_name.startswith("claude-"):
         return model_name
     if model_name in (_ALL_CONFIGURED_MODELS or ()):
@@ -414,9 +418,10 @@ def _resolve_declared_anthropic_model(model_name):
     state = _load_model_alias_state()
     defaults = state.get("anthropic_defaults") or {}
     selected_model = state.get("selected_model") or ""
+    fallback = _ALL_CONFIGURED_MODELS[0] if _ALL_CONFIGURED_MODELS else ""
     for tier, prefix in _DECLARED_ANTHROPIC_MODEL_PREFIXES.items():
         if model_name.startswith(prefix):
-            return defaults.get(tier) or selected_model or model_name
+            return defaults.get(tier) or selected_model or fallback or model_name
     return model_name
 
 
@@ -447,8 +452,12 @@ def _load_translated_models():
     # Config lives at repo root (one level above this module) on host,
     # but is mounted alongside proxy.py in the container at /app/.
     config_path = _resolve_config_path(os.path.dirname(os.path.abspath(__file__)))
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
+    if not os.path.isfile(config_path):
+        log.warning("Config file not found at %s, starting with empty model list", config_path)
+        cfg = {}
+    else:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
     route_state = _build_route_state(cfg.get("model_list", []))
     _OPENAI_TRANSLATED_MODELS = route_state["translated"]
     _ALL_CONFIGURED_MODELS = route_state["all_models"]

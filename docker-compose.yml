@@ -14,7 +14,7 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     restart: always
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      test: ["CMD", "python", "-c", "import http.client; c=http.client.HTTPConnection('localhost',4000,timeout=3); c.request('GET','/health/readiness'); exit(0 if c.getresponse().status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 60
@@ -29,12 +29,14 @@ services:
       - ./.env:/app/.env
       - ./litellm_config.yaml:/app/litellm_config.yaml
       - ./auth:/app/auth:ro
+      - ./data/gateway:/app/data
     env_file:
       - .env
     environment:
       - PROXY_LITELLM_HOST=litellm
       - PROXY_LITELLM_PORT=4000
       - PROXY_MAX_WORKERS=64
+      - PROXY_MODEL_ALIAS_STATE=/app/data/model-alias.json
     depends_on:
       litellm:
         condition: service_healthy

@@ -5,3 +5,4 @@ __pycache__/
 .proxy.pid
 .proxy.log
 auth/
+data/

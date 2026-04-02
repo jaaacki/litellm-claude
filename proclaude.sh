@@ -109,6 +109,9 @@ fi
 
 _ensure_docker
 
+# Ensure mount-point directories exist (gitignored, must be created at runtime)
+mkdir -p "$DIR/auth/chatgpt" "$DIR/data" "$DIR/data/gateway"
+
 CMD="$1"
 shift
 
