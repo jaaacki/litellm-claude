@@ -150,16 +150,9 @@ def cmd_openai_browser_trigger(provider_flag=None, model_flag=None, extra_args=N
 
 
 def cmd_start_status():
-    """Quick post-start status: backend reachability + model auth readiness."""
-    import container
+    """Quick post-start status: model auth readiness (no network calls)."""
     import config
     import providers
-
-    cs, _ = container.status()
-    if cs == Status.OK:
-        print("  ✓ LiteLLM backend is reachable")
-    else:
-        print("  ⚠ LiteLLM backend not yet reachable (may still be starting)")
 
     env_data = config.load_env_file(config.ENV_PATH)
     auth_dir = os.path.join(config.DIR, "auth")
