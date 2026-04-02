@@ -646,7 +646,9 @@ def _launch_inline_setup(entry, out):
         if instructions:
             out(f"\n  {instructions}\n")
         for env_var, prompt_text in prompts["fields"]:
-            value = input(f"  {prompt_text}").strip()
+            out(f"  {prompt_text}", end="")
+            sys.stderr.flush()
+            value = input().strip()
             if not value:
                 out("  Skipped.")
                 return False
@@ -662,6 +664,7 @@ def _launch_inline_setup(entry, out):
         ready, reason = provider.check_ready(env_data, auth_dir=auth_dir)
         if ready:
             entry["ready"] = True
+            entry["_needs_restart"] = True
             return True
         out(f"  Still not ready: {reason}")
         return False
@@ -686,6 +689,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     emit_env = _kwargs.get("emit_env")
     # Use _eprint for interactive output so it doesn't pollute stdout in --emit-env mode
     out = _eprint if emit_env else print
+    _credentials_changed = False  # Set True if inline setup wrote new keys to .env
 
     # Step 1: Check claude binary (skip in --emit-env mode)
     claude_bin = None
@@ -748,6 +752,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             out(f"  {entry['alias']} is not ready: {entry['ready_reason']}")
             if not _launch_inline_setup(entry, out):
                 sys.exit(1)
+            _credentials_changed = True
         model = {"alias": entry["alias"], "model": entry["model"], "provider": entry["provider"],
                  "litellm_params": {"model": entry["model"]}}
     else:
@@ -774,6 +779,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
                 sys.exit(1)
             if not _launch_inline_setup(entry, out):
                 sys.exit(1)
+            _credentials_changed = True
             model = {"alias": entry["alias"], "model": entry["model"], "provider": entry["provider"],
                      "litellm_params": {"model": entry["model"]}}
         elif len(ready) == 1 and not not_ready:
@@ -927,6 +933,8 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
                 channel = os.environ.get("TELEGRAM_CHANNEL", "plugin:telegram@claude-plugins-official")
                 cmd_parts += f" --channels '{channel}'"
             f.write(f"LAUNCH_CMD='{cmd_parts}'\n")
+            if _credentials_changed:
+                f.write("NEEDS_RESTART=1\n")
         return
 
     # Normal mode: exec claude

@@ -198,6 +198,13 @@ case "$CMD" in
         # Output is trusted (our own container) — safe to eval.
         eval "$env_output"
 
+        # If credentials were entered during launch, restart so LiteLLM picks them up
+        if [ "${NEEDS_RESTART:-}" = "1" ]; then
+            echo "  Restarting services to apply new credentials..."
+            _docker_compose up -d --force-recreate
+            _wait_for_gateway
+        fi
+
         python3 "$HOST_RUNTIME" \
             --compose-file "$COMPOSE_FILE" \
             offer-pending-auth \
