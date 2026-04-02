@@ -957,7 +957,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
                 f.write("NEEDS_RESTART=1\n")
             # Pass collected credentials to shell for host-side .env write
             for cred_key, cred_val in _pending_credentials.items():
-                f.write(f"SET_ENV_{cred_key}='{cred_val}'\n")
+                f.write(f"export SET_ENV_{cred_key}='{cred_val}'\n")
         return
 
     # Normal mode: exec claude
