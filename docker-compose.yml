@@ -38,6 +38,5 @@ services:
       - PROXY_MAX_WORKERS=64
       - PROXY_MODEL_ALIAS_STATE=/app/data/model-alias.json
     depends_on:
-      litellm:
-        condition: service_healthy
+      - litellm
     restart: always
