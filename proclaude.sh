@@ -205,10 +205,30 @@ case "$CMD" in
             _wait_for_gateway
         fi
 
-        python3 "$HOST_RUNTIME" \
-            --compose-file "$COMPOSE_FILE" \
-            offer-pending-auth \
-            --selected-model "${ANTHROPIC_MODEL:-selected model}"
+        # Only check OpenAI pending auth if the selected provider is OpenAI
+        if [ "${CLAUDE_SELECTED_PROVIDER:-}" = "openai" ]; then
+            python3 "$HOST_RUNTIME" \
+                --compose-file "$COMPOSE_FILE" \
+                offer-pending-auth \
+                --selected-model "${ANTHROPIC_MODEL:-selected model}"
+        fi
+
+        # Brief wait for LiteLLM backend (avoids 502 on first request)
+        ready_wait=0
+        while [ $ready_wait -lt 30 ]; do
+            if curl -s -o /dev/null -w '%{http_code}' http://localhost:2555/health/readiness 2>/dev/null | grep -q 200; then
+                break
+            fi
+            if [ $ready_wait -eq 0 ]; then
+                printf "  Waiting for backend" >&2
+            fi
+            printf "." >&2
+            sleep 1
+            ready_wait=$((ready_wait + 1))
+        done
+        if [ $ready_wait -gt 0 ]; then
+            echo "" >&2
+        fi
 
         echo "  Launching Claude Code (${ANTHROPIC_MODEL:-unknown})..."
         # shellcheck disable=SC2086
