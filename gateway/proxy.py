@@ -220,9 +220,11 @@ def _is_socket_timeout_error(exc):
 class _CircuitBreaker:
     """Per-provider circuit breaker. Opens after consecutive failures, half-opens after cooldown."""
 
-    def __init__(self, failure_threshold=5, cooldown_seconds=30):
+    def __init__(self, failure_threshold=5, cooldown_seconds=30, warmup_seconds=60):
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
+        self._warmup_seconds = warmup_seconds
+        self._start_time = time.monotonic()
         self._lock = threading.Lock()
         # provider -> {"failures": int, "opened_at": float|None, "probe_in_flight": bool}
         self._state = {}
@@ -246,6 +248,10 @@ class _CircuitBreaker:
 
     def record_failure(self, provider):
         with self._lock:
+            # Don't trip circuit during warmup — LiteLLM may still be initializing
+            if time.monotonic() - self._start_time < self._warmup_seconds:
+                log.debug("Circuit breaker ignoring failure during warmup for %s", provider)
+                return
             s = self._state.setdefault(provider, {"failures": 0, "opened_at": None, "probe_in_flight": False})
             s["failures"] += 1
             s["probe_in_flight"] = False
