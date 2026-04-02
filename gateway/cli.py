@@ -682,7 +682,6 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
     """Launch Claude Code through the LiteLLM proxy."""
     import shutil
     import config
-    import container
     import providers
 
     extra_args = extra_args or []
@@ -705,13 +704,7 @@ def cmd_launch_claude(provider_flag=None, model_flag=None, extra_args=None, thin
             print("    npm install -g @anthropic-ai/claude-code")
             sys.exit(1)
 
-    # Step 2: Check LiteLLM backend (warn but don't block — proxy handles 502)
-    cs, _ = container.status()
-    if cs != Status.OK:
-        out("  \u26a0 LiteLLM backend not yet reachable (may still be starting)")
-        out("    If upstream auth is pending, you can finish it after model selection")
-
-    # Step 3: Build catalog from provider registry with readiness checks.
+    # Step 2: Build catalog from provider registry with readiness checks.
     # Uses check_ready() for fast local checks instead of network-calling validate().
     env_data = config.load_env_file(config.ENV_PATH)
     auth_dir = os.path.join(config.DIR, "auth")
